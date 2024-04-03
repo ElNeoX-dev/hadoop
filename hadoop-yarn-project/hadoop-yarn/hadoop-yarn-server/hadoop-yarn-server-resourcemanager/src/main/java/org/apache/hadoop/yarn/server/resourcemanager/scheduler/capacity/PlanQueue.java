@@ -81,8 +81,8 @@ public class PlanQueue extends AbstractManagedParentQueue {
   @Override
   public void reinitialize(CSQueue newlyParsedQueue,
       Resource clusterResource) throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       // Sanity check
       if (!(newlyParsedQueue instanceof PlanQueue) || !newlyParsedQueue
           .getQueuePath().equals(getQueuePath())) {
@@ -165,7 +165,8 @@ public class PlanQueue extends AbstractManagedParentQueue {
   }
 
   /**
-   * Determine whether to hide/show the ReservationQueues
+   * Determine whether to hide/show the ReservationQueues.
+   * @return true, show ReservationQueues; false, hide ReservationQueues.
    */
   public boolean showReservationsAsQueues() {
     return showReservationsAsQueues;

@@ -25,8 +25,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -35,6 +35,7 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.audit.CommonAuditContext;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.service.Service;
 import org.apache.hadoop.util.ExitCodeProvider;
@@ -200,7 +201,7 @@ public class ServiceLauncher<S extends Service>
    * Get the service.
    *
    * Null until
-   * {@link #coreServiceLaunch(Configuration, List, boolean, boolean)}
+   * {@link #coreServiceLaunch(Configuration, Service, List, boolean, boolean)}
    * has completed.
    * @return the service
    */
@@ -268,7 +269,7 @@ public class ServiceLauncher<S extends Service>
    * <ol>
    * <li>Parse the command line.</li> 
    * <li>Build the service configuration from it.</li>
-   * <li>Start the service.</li>.
+   * <li>Start the service.</li>
    * <li>If it is a {@link LaunchableService}: execute it</li>
    * <li>Otherwise: wait for it to finish.</li>
    * <li>Exit passing the status code to the {@link #exit(int, String)}
@@ -303,7 +304,7 @@ public class ServiceLauncher<S extends Service>
       exitException = e;
       noteException(exitException);
     }
-    if (exitException.getExitCode() != 0) {
+    if (exitException.getExitCode() == LauncherExitCodes.EXIT_USAGE) {
       // something went wrong. Print the usage and commands
       System.err.println(getUsageMessage());
       System.err.println("Command: " + argumentString);
@@ -328,8 +329,18 @@ public class ServiceLauncher<S extends Service>
    * @param exitException exception
    */
   void noteException(ExitUtil.ExitException exitException) {
-    LOG.debug("Exception raised", exitException);
-    serviceExitCode = exitException.getExitCode();
+    int exitCode = exitException.getExitCode();
+    if (exitCode != 0) {
+      LOG.debug("Exception raised with exit code {}",
+          exitCode,
+          exitException);
+      Throwable cause = exitException.getCause();
+      if (cause != null) {
+        // log the nested exception in more detail
+        LOG.warn("{}", cause.toString(), cause);
+      }
+    }
+    serviceExitCode = exitCode;
     serviceException = exitException;
   }
 
@@ -401,7 +412,7 @@ public class ServiceLauncher<S extends Service>
   }
 
   /**
-   * This creates all the configurations defined by
+   * @return This creates all the configurations defined by
    * {@link #getConfigurationsToCreate()} , ensuring that
    * the resources have been pushed in.
    * If one cannot be loaded it is logged and the operation continues
@@ -451,17 +462,38 @@ public class ServiceLauncher<S extends Service>
    * @param execute execute/wait for the service to stop.
    * @return an exit exception, which will have a status code of 0 if it worked
    */
-  @VisibleForTesting
   public ExitUtil.ExitException launchService(Configuration conf,
       List<String> processedArgs,
       boolean addShutdownHook,
       boolean execute) {
-    
+    return launchService(conf, null, processedArgs, addShutdownHook, execute);
+  }
+
+  /**
+   * Launch a service catching all exceptions and downgrading them to exit codes
+   * after logging.
+   *
+   * Sets {@link #serviceException} to this value.
+   * @param conf configuration to use
+   * @param instance optional instance of the service.
+   * @param processedArgs command line after the launcher-specific arguments
+   * have been stripped out.
+   * @param addShutdownHook should a shutdown hook be added to terminate
+   * this service on shutdown. Tests should set this to false.
+   * @param execute execute/wait for the service to stop.
+   * @return an exit exception, which will have a status code of 0 if it worked
+   */
+  public ExitUtil.ExitException launchService(Configuration conf,
+      S instance,
+      List<String> processedArgs,
+      boolean addShutdownHook,
+      boolean execute) {
+
     ExitUtil.ExitException exitException;
-    
+
     try {
-      int exitCode = coreServiceLaunch(conf, processedArgs, addShutdownHook,
-          execute);
+      int exitCode = coreServiceLaunch(conf, instance, processedArgs,
+          addShutdownHook, execute);
       if (service != null) {
         // check to see if the service failed
         Throwable failure = service.getFailureCause();
@@ -495,6 +527,12 @@ public class ServiceLauncher<S extends Service>
       // exit exceptions are passed through unchanged
       exitException = ee;
     } catch (Throwable thrown) {
+      // other errors need a full log.
+      LOG.error("Exception raised {}",
+          service != null
+              ? (service.toString() + " in state  " + service.getServiceState())
+              : "during service instantiation",
+          thrown);
       exitException = convertToExitException(thrown);
     }
     noteException(exitException);
@@ -514,6 +552,7 @@ public class ServiceLauncher<S extends Service>
    * {@link #getService()}.
    *
    * @param conf configuration
+   * @param instance optional instance of the service.
    * @param processedArgs arguments after the configuration parameters
    * have been stripped out.
    * @param addShutdownHook should a shutdown hook be added to terminate
@@ -527,15 +566,23 @@ public class ServiceLauncher<S extends Service>
    * @throws Exception any other failure -if it implements
    * {@link ExitCodeProvider} then it defines the exit code for any
    * containing exception
+   * @return status code.
    */
 
   protected int coreServiceLaunch(Configuration conf,
+      S instance,
       List<String> processedArgs,
       boolean addShutdownHook,
       boolean execute) throws Exception {
 
     // create the service instance
-    instantiateService(conf);
+    if (instance == null) {
+      instantiateService(conf);
+    } else {
+      // service already exists, so instantiate
+      configuration = conf;
+      service = instance;
+    }
     ServiceShutdownHook shutdownHook = null;
 
     // and the shutdown hook if requested
@@ -545,6 +592,7 @@ public class ServiceLauncher<S extends Service>
     }
     String name = getServiceName();
     LOG.debug("Launched service {}", name);
+    CommonAuditContext.noteEntryPoint(service);
     LaunchableService launchableService = null;
 
     if (service instanceof LaunchableService) {
@@ -600,7 +648,7 @@ public class ServiceLauncher<S extends Service>
   }
 
   /**
-   * Instantiate the service defined in {@code serviceClassName}.
+   * @return Instantiate the service defined in {@code serviceClassName}.
    *
    * Sets the {@code configuration} field
    * to the the value of {@code conf},
@@ -685,8 +733,7 @@ public class ServiceLauncher<S extends Service>
     }
     // construct the new exception with the original message and
     // an exit code
-    exitException = new ServiceLaunchException(exitCode, message);
-    exitException.initCause(thrown);
+    exitException = new ServiceLaunchException(exitCode, thrown, message);
     return exitException;
   }
 
@@ -805,6 +852,7 @@ public class ServiceLauncher<S extends Service>
    * The service launcher code assumes that after this method is invoked,
    * no other code in the same method is called.
    * @param exitCode code to exit
+   * @param message input message.
    */
   protected void exit(int exitCode, String message) {
     ExitUtil.terminate(exitCode, message);
@@ -917,7 +965,7 @@ public class ServiceLauncher<S extends Service>
       throw new ServiceLaunchException(EXIT_COMMAND_ARGUMENT_ERROR, e);
     } catch (RuntimeException e) {
       // lower level issue such as XML parse failure
-      throw new ServiceLaunchException(EXIT_COMMAND_ARGUMENT_ERROR,
+      throw new ServiceLaunchException(EXIT_COMMAND_ARGUMENT_ERROR, e,
           E_PARSE_FAILED + " %s : %s", argString, e);
     }
   }
@@ -956,7 +1004,7 @@ public class ServiceLauncher<S extends Service>
   }
 
   /**
-   * Build a log message for starting up and shutting down. 
+   * @return Build a log message for starting up and shutting down.
    * @param classname the class of the server
    * @param args arguments
    */

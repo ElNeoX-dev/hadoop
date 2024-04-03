@@ -25,7 +25,6 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.impl.Log4jLoggerAdapter;
 
 /**
  * Contains utility methods for dealing with Java Generics. 
@@ -52,6 +51,8 @@ public class GenericsUtil {
    * <code>T[]</code>.
    * @param c the Class object of the items in the list
    * @param list the list to convert
+   * @param <T> Generics Type T.
+   * @return T Array.
    */
   public static <T> T[] toArray(Class<T> c, List<T> list)
   {
@@ -68,8 +69,10 @@ public class GenericsUtil {
    * Converts the given <code>List&lt;T&gt;</code> to a an array of 
    * <code>T[]</code>. 
    * @param list the list to convert
+   * @param <T> Generics Type T.
    * @throws ArrayIndexOutOfBoundsException if the list is empty. 
    * Use {@link #toArray(Class, List)} if the list may be empty.
+   * @return T Array.
    */
   public static <T> T[] toArray(List<T> list) {
     return toArray(getClass(list.get(0)), list);
@@ -85,6 +88,11 @@ public class GenericsUtil {
       return false;
     }
     Logger log = LoggerFactory.getLogger(clazz);
-    return log instanceof Log4jLoggerAdapter;
+    try {
+      Class log4jClass = Class.forName("org.slf4j.impl.Reload4jLoggerAdapter");
+      return log4jClass.isInstance(log);
+    } catch (ClassNotFoundException e) {
+      return false;
+    }
   }
 }

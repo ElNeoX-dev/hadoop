@@ -31,8 +31,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -48,20 +48,15 @@ import org.apache.hadoop.util.ToolRunner;
 import org.junit.AfterClass;
 import org.junit.Assert;
 import org.junit.BeforeClass;
-import org.junit.Rule;
 import org.junit.Test;
-import org.junit.rules.Timeout;
 
 /**
  * A JUnit test for copying files recursively.
  */
 
 public class TestDistCpSystem {
-  private static final Log LOG =
-      LogFactory.getLog(TestDistCpSystem.class);
-
-  @Rule
-  public Timeout globalTimeout = new Timeout(30000);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDistCpSystem.class);
 
   private static final String SRCDAT = "srcdat";
   private static final String DSTDAT = "dstdat";

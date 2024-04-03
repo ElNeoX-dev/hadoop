@@ -17,18 +17,18 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.NSQuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport.DiffReportEntry;
@@ -40,12 +40,12 @@ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeat
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.Whitebox;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
 
 import java.io.File;
 import java.io.IOException;
@@ -54,9 +54,14 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
 
-import static org.junit.Assert.*;
-import static org.mockito.Matchers.anyBoolean;
-import static org.mockito.Matchers.anyObject;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
@@ -65,7 +70,8 @@ public class TestRenameWithSnapshots {
   static {
     SnapshotTestHelper.disableLogs();
   }
-  private static final Log LOG = LogFactory.getLog(TestRenameWithSnapshots.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestRenameWithSnapshots.class);
   
   private static final long SEED = 0;
   private static final short REPL = 3;
@@ -559,9 +565,9 @@ public class TestRenameWithSnapshots {
     SnapshotTestHelper.dumpTree2File(fsdir, fsnMiddle);
    
     // save namespace and restart cluster
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.setSafeMode(SafeModeAction.ENTER);
     hdfs.saveNamespace();
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    hdfs.setSafeMode(SafeModeAction.LEAVE);
     cluster.shutdown();
     cluster = new MiniDFSCluster.Builder(conf).format(false)
         .numDataNodes(REPL).build();
@@ -1149,7 +1155,45 @@ public class TestRenameWithSnapshots {
     assertEquals(bar, dirs[0].getFullPath());
     assertEquals(fooId, dirs[0].getDirStatus().getFileId());
   }
-  
+
+  /**
+   * Test rename where src has snapshottable descendant directories and
+   * dst is a descent of a snapshottable directory. Such case will cause
+   * nested snapshot which HDFS currently not fully supported.
+   */
+  @Test
+  public void testRenameWithNestedSnapshottableDirs() throws Exception {
+    final Path sdir1 = new Path("/dir1");
+    final Path sdir2 = new Path("/dir2");
+    final Path foo = new Path(sdir1, "foo");
+    final Path bar = new Path(sdir2, "bar");
+
+    hdfs.mkdirs(foo);
+    hdfs.mkdirs(bar);
+
+    hdfs.allowSnapshot(foo);
+    hdfs.allowSnapshot(sdir2);
+
+    try {
+      hdfs.rename(foo, bar, Rename.OVERWRITE);
+      fail("Except exception since " + "Unable to rename because "
+          + foo.toString() + " has snapshottable descendant directories and "
+          + sdir2.toString() + " is a descent of a snapshottable directory, "
+          + "and HDFS does not support nested snapshottable directory.");
+    } catch (IOException e) {
+      GenericTestUtils.assertExceptionContains("Unable to rename because "
+            + foo.toString() + " has snapshottable descendant directories and "
+            + sdir2.toString() + " is a descent of a snapshottable directory, "
+            + "and HDFS does not support nested snapshottable directory.", e);
+    }
+
+    hdfs.disallowSnapshot(foo);
+    hdfs.rename(foo, bar, Rename.OVERWRITE);
+    SnapshottableDirectoryStatus[] dirs = fsn.getSnapshottableDirListing();
+    assertEquals(1, dirs.length);
+    assertEquals(sdir2, dirs[0].getFullPath());
+  }
+
   /**
    * After rename, delete the snapshot in src
    */
@@ -1304,8 +1348,8 @@ public class TestRenameWithSnapshots {
     
     INodeDirectory dir2 = fsdir.getINode4Write(sdir2.toString()).asDirectory();
     INodeDirectory mockDir2 = spy(dir2);
-    doReturn(false).when(mockDir2).addChild((INode) anyObject(), anyBoolean(),
-           Mockito.anyInt());
+    doReturn(false).when(mockDir2).addChild(any(), anyBoolean(),
+           anyInt());
     INodeDirectory root = fsdir.getINode4Write("/").asDirectory();
     root.replaceChild(dir2, mockDir2, fsdir.getINodeMap());
     
@@ -1374,8 +1418,8 @@ public class TestRenameWithSnapshots {
     
     INodeDirectory dir2 = fsdir.getINode4Write(sdir2.toString()).asDirectory();
     INodeDirectory mockDir2 = spy(dir2);
-    doReturn(false).when(mockDir2).addChild((INode) anyObject(), anyBoolean(),
-            Mockito.anyInt());
+    doReturn(false).when(mockDir2).addChild(any(), anyBoolean(),
+            anyInt());
     INodeDirectory root = fsdir.getINode4Write("/").asDirectory();
     root.replaceChild(dir2, mockDir2, fsdir.getINodeMap());
     
@@ -1438,8 +1482,8 @@ public class TestRenameWithSnapshots {
     
     INodeDirectory dir3 = fsdir.getINode4Write(sdir3.toString()).asDirectory();
     INodeDirectory mockDir3 = spy(dir3);
-    doReturn(false).when(mockDir3).addChild((INode) anyObject(), anyBoolean(),
-            Mockito.anyInt());
+    doReturn(false).when(mockDir3).addChild(any(), anyBoolean(),
+            anyInt());
     INodeDirectory root = fsdir.getINode4Write("/").asDirectory();
     root.replaceChild(dir3, mockDir3, fsdir.getINodeMap());
     
@@ -1541,10 +1585,10 @@ public class TestRenameWithSnapshots {
     INodeDirectory dir3 = fsdir.getINode4Write(sdir3.toString()).asDirectory();
     INodeDirectory mockDir3 = spy(dir3);
     // fail the rename but succeed in undo
-    doReturn(false).when(mockDir3).addChild((INode) Mockito.isNull(),
-        anyBoolean(), Mockito.anyInt());
-    Mockito.when(mockDir3.addChild((INode) Mockito.isNotNull(), anyBoolean(), 
-        Mockito.anyInt())).thenReturn(false).thenCallRealMethod();
+    doReturn(false).when(mockDir3).addChild(Mockito.isNull(),
+        anyBoolean(), anyInt());
+    Mockito.when(mockDir3.addChild(Mockito.isNotNull(), anyBoolean(),
+        anyInt())).thenReturn(false).thenCallRealMethod();
     INodeDirectory root = fsdir.getINode4Write("/").asDirectory();
     root.replaceChild(dir3, mockDir3, fsdir.getINodeMap());
     foo3Node.setParent(mockDir3);
@@ -1593,10 +1637,7 @@ public class TestRenameWithSnapshots {
     final Path foo2 = new Path(subdir2, foo.getName());
     FSDirectory fsdir2 = Mockito.spy(fsdir);
     Mockito.doThrow(new NSQuotaExceededException("fake exception")).when(fsdir2)
-        .addLastINode((INodesInPath) Mockito.anyObject(),
-            (INode) Mockito.anyObject(),
-            (FsPermission) Mockito.anyObject(),
-            Mockito.anyBoolean());
+        .addLastINode(any(), any(), any(), anyBoolean());
     Whitebox.setInternalState(fsn, "dir", fsdir2);
     // rename /test/dir1/foo to /test/dir2/subdir2/foo. 
     // FSDirectory#verifyQuota4Rename will pass since the remaining quota is 2.
@@ -1666,7 +1707,7 @@ public class TestRenameWithSnapshots {
     hdfs.setQuota(dir2, 4, Long.MAX_VALUE - 1);
     FSDirectory fsdir2 = Mockito.spy(fsdir);
     Mockito.doThrow(new RuntimeException("fake exception")).when(fsdir2)
-        .removeLastINode((INodesInPath) Mockito.anyObject());
+        .removeLastINode(any());
     Whitebox.setInternalState(fsn, "dir", fsdir2);
     // rename /test/dir1/foo to /test/dir2/sub_dir2/subsub_dir2. 
     // FSDirectory#verifyQuota4Rename will pass since foo only be counted 
@@ -1770,9 +1811,9 @@ public class TestRenameWithSnapshots {
     // correct. Note that when loading fsimage, foo and bar will be converted 
     // back to normal INodeDirectory and INodeFile since they do not store any 
     // snapshot data
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.setSafeMode(SafeModeAction.ENTER);
     hdfs.saveNamespace();
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    hdfs.setSafeMode(SafeModeAction.LEAVE);
     cluster.shutdown();
     cluster = new MiniDFSCluster.Builder(conf).format(false)
         .numDataNodes(REPL).build();
@@ -2181,24 +2222,11 @@ public class TestRenameWithSnapshots {
     INodeDirectory dir2Node = fsdir.getINode4Write(dir2.toString())
         .asDirectory();
     assertTrue("the diff list of " + dir2
-        + " should be empty after deleting s0", dir2Node.getDiffs().asList()
-        .isEmpty());
+        + " should be empty after deleting s0", !dir2Node.isWithSnapshot());
     
     assertTrue(hdfs.exists(newfoo));
     INode fooRefNode = fsdir.getINode4Write(newfoo.toString());
     assertTrue(fooRefNode instanceof INodeReference.DstReference);
-    INodeDirectory fooNode = fooRefNode.asDirectory();
-    // fooNode should be still INodeDirectory (With Snapshot) since we call
-    // recordModification before the rename
-    assertTrue(fooNode.isWithSnapshot());
-    assertTrue(fooNode.getDiffs().asList().isEmpty());
-    INodeDirectory barNode = fooNode.getChildrenList(Snapshot.CURRENT_STATE_ID)
-        .get(0).asDirectory();
-    // bar should also be INodeDirectory (With Snapshot), and both of its diff 
-    // list and children list are empty 
-    assertTrue(barNode.getDiffs().asList().isEmpty());
-    assertTrue(barNode.getChildrenList(Snapshot.CURRENT_STATE_ID).isEmpty());
-    
     restartClusterAndCheckImage(true);
   }
   
@@ -2457,9 +2485,9 @@ public class TestRenameWithSnapshots {
     deleteSnapshot(sub1, snap6);
     deleteSnapshot(sub1, snap3);
     // save namespace and restart Namenode
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    hdfs.setSafeMode(SafeModeAction.ENTER);
     hdfs.saveNamespace();
-    hdfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    hdfs.setSafeMode(SafeModeAction.LEAVE);
     cluster.restartNameNode(true);
   }
 
@@ -2486,5 +2514,29 @@ public class TestRenameWithSnapshots {
         fsn.getFSDirectory().getINode("/").dumpTreeRecursively().toString();
     output.println(b);
     return b;
+  }
+
+  /**
+   * Test getContentsummary and getQuotausage for an INodeReference.
+   */
+  @Test(timeout = 300000)
+  public void testQuotaForRenameFileInSnapshot() throws Exception {
+    final Path snapshotDir = new Path("/testRenameWithSnapshot");
+    hdfs.mkdirs(snapshotDir, new FsPermission((short) 0777));
+    final Path file = new Path(snapshotDir, "file");
+    DFSTestUtil.createFile(hdfs, file, BLOCKSIZE, REPL, SEED);
+    hdfs.allowSnapshot(snapshotDir);
+    hdfs.createSnapshot(snapshotDir, "s0");
+    hdfs.mkdirs(new Path("/dir1"));
+
+    // Truncate a file which exists in snapshot , that is an
+    // INodeReference
+    hdfs.truncate(file, 10);
+    hdfs.rename(file, new Path("/dir1"));
+    assertEquals(hdfs.getContentSummary(new Path("/")).getSpaceConsumed(),
+        hdfs.getQuotaUsage(new Path("/")).getSpaceConsumed());
+    assertEquals(
+        hdfs.getContentSummary(new Path("/")).getFileAndDirectoryCount(),
+        hdfs.getQuotaUsage(new Path("/")).getFileAndDirectoryCount());
   }
 }

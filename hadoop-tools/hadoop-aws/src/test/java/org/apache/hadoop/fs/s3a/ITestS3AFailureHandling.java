@@ -19,29 +19,35 @@
 package org.apache.hadoop.fs.s3a;
 
 import com.amazonaws.services.s3.model.DeleteObjectsRequest;
-import com.amazonaws.services.s3.model.MultiObjectDeleteException;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
 
+import org.assertj.core.api.Assertions;
 import org.junit.Assume;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.LocatedFileStatus;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.statistics.StoreStatisticNames;
+import org.apache.hadoop.fs.store.audit.AuditSpan;
+
 import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.EOFException;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.file.AccessDeniedException;
 
 import static org.apache.hadoop.fs.contract.ContractTestUtils.*;
+import static org.apache.hadoop.fs.s3a.S3ATestUtils.createFiles;
+import static org.apache.hadoop.fs.s3a.test.ExtraAssertions.failIf;
 import static org.apache.hadoop.test.LambdaTestUtils.*;
+import static org.apache.hadoop.util.functional.RemoteIterators.mappingRemoteIterator;
+import static org.apache.hadoop.util.functional.RemoteIterators.toList;
 
 /**
- * Test S3A Failure translation, including a functional test
- * generating errors during stream IO.
+ * ITest for failure handling, primarily multipart deletion.
  */
 public class ITestS3AFailureHandling extends AbstractS3ATestBase {
   private static final Logger LOG =
@@ -53,65 +59,6 @@ public class ITestS3AFailureHandling extends AbstractS3ATestBase {
     S3ATestUtils.disableFilesystemCaching(conf);
     conf.setBoolean(Constants.ENABLE_MULTI_DELETE, true);
     return conf;
-  }
-  @Test
-  public void testReadFileChanged() throws Throwable {
-    describe("overwrite a file with a shorter one during a read, seek");
-    final int fullLength = 8192;
-    final byte[] fullDataset = dataset(fullLength, 'a', 32);
-    final int shortLen = 4096;
-    final byte[] shortDataset = dataset(shortLen, 'A', 32);
-    final FileSystem fs = getFileSystem();
-    final Path testpath = path("readFileToChange.txt");
-    // initial write
-    writeDataset(fs, testpath, fullDataset, fullDataset.length, 1024, false);
-    try(FSDataInputStream instream = fs.open(testpath)) {
-      instream.seek(fullLength - 16);
-      assertTrue("no data to read", instream.read() >= 0);
-      // overwrite
-      writeDataset(fs, testpath, shortDataset, shortDataset.length, 1024, true);
-      // here the file length is less. Probe the file to see if this is true,
-      // with a spin and wait
-      eventually(30 * 1000, 1000,
-          () -> {
-            assertEquals(shortLen, fs.getFileStatus(testpath).getLen());
-          });
-
-      // here length is shorter. Assuming it has propagated to all replicas,
-      // the position of the input stream is now beyond the EOF.
-      // An attempt to seek backwards to a position greater than the
-      // short length will raise an exception from AWS S3, which must be
-      // translated into an EOF
-
-      instream.seek(shortLen + 1024);
-      int c = instream.read();
-      assertIsEOF("read()", c);
-
-      byte[] buf = new byte[256];
-
-      assertIsEOF("read(buffer)", instream.read(buf));
-      assertIsEOF("read(offset)",
-          instream.read(instream.getPos(), buf, 0, buf.length));
-
-      // now do a block read fully, again, backwards from the current pos
-      intercept(EOFException.class, "", "readfully",
-          () -> instream.readFully(shortLen + 512, buf));
-
-      assertIsEOF("read(offset)",
-          instream.read(shortLen + 510, buf, 0, buf.length));
-
-      // seek somewhere useful
-      instream.seek(shortLen - 256);
-
-      // delete the file. Reads must fail
-      fs.delete(testpath, false);
-
-      intercept(FileNotFoundException.class, "", "read()",
-          () -> instream.read());
-      intercept(FileNotFoundException.class, "", "readfully",
-          () -> instream.readFully(2048, buf));
-
-    }
   }
 
   /**
@@ -130,14 +77,52 @@ public class ITestS3AFailureHandling extends AbstractS3ATestBase {
     removeKeys(getFileSystem(), "ITestS3AFailureHandling/missingFile");
   }
 
+  /**
+   * See HADOOP-18112.
+   */
+  @Test
+  public void testMultiObjectDeleteLargeNumKeys() throws Exception {
+    S3AFileSystem fs =  getFileSystem();
+    Path path = path("largeDir");
+    mkdirs(path);
+    createFiles(fs, path, 1, 1005, 0);
+    RemoteIterator<LocatedFileStatus> locatedFileStatusRemoteIterator =
+            fs.listFiles(path, false);
+    List<String> keys  = toList(mappingRemoteIterator(locatedFileStatusRemoteIterator,
+        locatedFileStatus -> fs.pathToKey(locatedFileStatus.getPath())));
+    // After implementation of paging during multi object deletion,
+    // no exception is encountered.
+    Long bulkDeleteReqBefore = getNumberOfBulkDeleteRequestsMadeTillNow(fs);
+    try (AuditSpan span = span()) {
+      fs.removeKeys(buildDeleteRequest(keys.toArray(new String[0])), false);
+    }
+    Long bulkDeleteReqAfter = getNumberOfBulkDeleteRequestsMadeTillNow(fs);
+    // number of delete requests is 5 as we have default page size of 250.
+    Assertions.assertThat(bulkDeleteReqAfter - bulkDeleteReqBefore)
+            .describedAs("Number of batched bulk delete requests")
+            .isEqualTo(5);
+  }
+
+  private Long getNumberOfBulkDeleteRequestsMadeTillNow(S3AFileSystem fs) {
+    return fs.getIOStatistics().counters()
+            .get(StoreStatisticNames.OBJECT_BULK_DELETE_REQUEST);
+  }
+
   private void removeKeys(S3AFileSystem fileSystem, String... keys)
       throws IOException {
+    try (AuditSpan span = span()) {
+      fileSystem.removeKeys(buildDeleteRequest(keys), false);
+    }
+  }
+
+  private List<DeleteObjectsRequest.KeyVersion> buildDeleteRequest(
+      final String[] keys) {
     List<DeleteObjectsRequest.KeyVersion> request = new ArrayList<>(
         keys.length);
     for (String key : keys) {
       request.add(new DeleteObjectsRequest.KeyVersion(key));
     }
-    fileSystem.removeKeys(request, false, false);
+    return request;
   }
 
   @Test
@@ -150,15 +135,48 @@ public class ITestS3AFailureHandling extends AbstractS3ATestBase {
     timer.end("removeKeys");
   }
 
-  @Test
-  public void testMultiObjectDeleteNoPermissions() throws Throwable {
+
+  private Path maybeGetCsvPath() {
     Configuration conf = getConfiguration();
     String csvFile = conf.getTrimmed(KEY_CSVTEST_FILE, DEFAULT_CSVTEST_FILE);
     Assume.assumeTrue("CSV test file is not the default",
         DEFAULT_CSVTEST_FILE.equals(csvFile));
-    Path testFile = new Path(csvFile);
-    S3AFileSystem fs = (S3AFileSystem)testFile.getFileSystem(conf);
-    intercept(MultiObjectDeleteException.class,
-        () -> removeKeys(fs, fs.pathToKey(testFile)));
+    return new Path(csvFile);
+  }
+
+  /**
+   * Test low-level failure handling with low level delete request.
+   */
+  @Test
+  public void testMultiObjectDeleteNoPermissions() throws Throwable {
+    describe("Delete the landsat CSV file and expect it to fail");
+    Path csvPath = maybeGetCsvPath();
+    S3AFileSystem fs = (S3AFileSystem) csvPath.getFileSystem(
+        getConfiguration());
+    // create a span, expect it to be activated.
+    fs.getAuditSpanSource().createSpan(StoreStatisticNames.OP_DELETE,
+        csvPath.toString(), null);
+    List<DeleteObjectsRequest.KeyVersion> keys
+        = buildDeleteRequest(
+            new String[]{
+                fs.pathToKey(csvPath),
+                "missing-key.csv"
+            });
+  }
+
+  /**
+   * Test low-level failure handling with a single-entry file.
+   * This is deleted as a single call, so isn't that useful.
+   */
+  @Test
+  public void testSingleObjectDeleteNoPermissionsTranslated() throws Throwable {
+    describe("Delete the landsat CSV file and expect it to fail");
+    Path csvPath = maybeGetCsvPath();
+    S3AFileSystem fs = (S3AFileSystem) csvPath.getFileSystem(
+        getConfiguration());
+    AccessDeniedException aex = intercept(AccessDeniedException.class,
+        () -> fs.delete(csvPath, false));
+    Throwable cause = aex.getCause();
+    failIf(cause == null, "no nested exception", aex);
   }
 }

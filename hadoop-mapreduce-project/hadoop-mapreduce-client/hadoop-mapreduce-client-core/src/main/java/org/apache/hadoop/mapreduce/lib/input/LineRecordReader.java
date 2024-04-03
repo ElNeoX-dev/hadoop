@@ -24,7 +24,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FutureDataInputStreamBuilder;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.Seekable;
 import org.apache.hadoop.io.LongWritable;
@@ -36,10 +36,16 @@ import org.apache.hadoop.io.compress.SplittableCompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.Decompressor;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.util.functional.FutureIO;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_SPLIT_END;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_SPLIT_START;
 
 /**
  * Treats keys as offset in file and value as line. 
@@ -82,8 +88,16 @@ public class LineRecordReader extends RecordReader<LongWritable, Text> {
     final Path file = split.getPath();
 
     // open the file and seek to the start of the split
-    final FileSystem fs = file.getFileSystem(job);
-    fileIn = fs.open(file);
+    final FutureDataInputStreamBuilder builder =
+        file.getFileSystem(job).openFile(file);
+    // the start and end of the split may be used to build
+    // an input strategy.
+    builder.optLong(FS_OPTION_OPENFILE_SPLIT_START, start);
+    builder.optLong(FS_OPTION_OPENFILE_SPLIT_END, end);
+    FutureIO.propagateOptions(builder, job,
+        MRJobConfig.INPUT_FILE_OPTION_PREFIX,
+        MRJobConfig.INPUT_FILE_MANDATORY_PREFIX);
+    fileIn = FutureIO.awaitFuture(builder.build());
     
     CompressionCodec codec = new CompressionCodecFactory(job).getCodec(file);
     if (null!=codec) {

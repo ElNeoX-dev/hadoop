@@ -30,7 +30,7 @@ import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -237,7 +237,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
    */
   public DatanodeDescriptor(DatanodeID nodeID) {
     super(nodeID);
-    updateHeartbeatState(StorageReport.EMPTY_ARRAY, 0L, 0L, 0, 0, null);
+    setLastUpdate(Time.now());
+    setLastUpdateMonotonic(Time.monotonicNow());
   }
 
   /**
@@ -248,7 +249,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
   public DatanodeDescriptor(DatanodeID nodeID, 
                             String networkLocation) {
     super(nodeID, networkLocation);
-    updateHeartbeatState(StorageReport.EMPTY_ARRAY, 0L, 0L, 0, 0, null);
+    setLastUpdate(Time.now());
+    setLastUpdateMonotonic(Time.monotonicNow());
   }
 
   public CachedBlocksList getPendingCached() {
@@ -339,7 +341,9 @@ public class DatanodeDescriptor extends DatanodeInfo {
 
   public void resetBlocks() {
     updateStorageStats(this.getStorageReports(), 0L, 0L, 0, 0, null);
-    this.invalidateBlocks.clear();
+    synchronized (invalidateBlocks) {
+      this.invalidateBlocks.clear();
+    }
     this.volumeFailures = 0;
     // pendingCached, cached, and pendingUncached are protected by the
     // FSN lock.
@@ -373,7 +377,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   /**
    * Updates stats from datanode heartbeat.
    */
-  public void updateHeartbeat(StorageReport[] reports, long cacheCapacity,
+  void updateHeartbeat(StorageReport[] reports, long cacheCapacity,
       long cacheUsed, int xceiverCount, int volFailures,
       VolumeFailureSummary volumeFailureSummary) {
     updateHeartbeatState(reports, cacheCapacity, cacheUsed, xceiverCount,
@@ -384,7 +388,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
   /**
    * process datanode heartbeat or stats initialization.
    */
-  public void updateHeartbeatState(StorageReport[] reports, long cacheCapacity,
+  void updateHeartbeatState(StorageReport[] reports, long cacheCapacity,
       long cacheUsed, int xceiverCount, int volFailures,
       VolumeFailureSummary volumeFailureSummary) {
     updateStorageStats(reports, cacheCapacity, cacheUsed, xceiverCount,
@@ -451,8 +455,11 @@ public class DatanodeDescriptor extends DatanodeInfo {
     this.volumeFailureSummary = volumeFailureSummary;
     for (StorageReport report : reports) {
 
-      DatanodeStorageInfo storage =
-          storageMap.get(report.getStorage().getStorageID());
+      DatanodeStorageInfo storage = null;
+      synchronized (storageMap) {
+        storage =
+            storageMap.get(report.getStorage().getStorageID());
+      }
       if (checkFailedStorages) {
         failedStorageInfos.remove(storage);
       }
@@ -629,18 +636,33 @@ public class DatanodeDescriptor extends DatanodeInfo {
     return new BlockIterator(startBlock, getStorageInfos());
   }
 
-  void incrementPendingReplicationWithoutTargets() {
+  /**
+   * Get iterator, which starts iterating from the specified block and storages.
+   *
+   * @param startBlock on which blocks are start iterating
+   * @param storageInfos specified storages
+   */
+  Iterator<BlockInfo> getBlockIterator(
+      final int startBlock, final DatanodeStorageInfo[] storageInfos) {
+    return new BlockIterator(startBlock, storageInfos);
+  }
+
+  @VisibleForTesting
+  public void incrementPendingReplicationWithoutTargets() {
     pendingReplicationWithoutTargets++;
   }
 
-  void decrementPendingReplicationWithoutTargets() {
+  @VisibleForTesting
+  public void decrementPendingReplicationWithoutTargets() {
     pendingReplicationWithoutTargets--;
   }
 
   /**
    * Store block replication work.
    */
-  void addBlockToBeReplicated(Block block, DatanodeStorageInfo[] targets) {
+  @VisibleForTesting
+  public void addBlockToBeReplicated(Block block,
+      DatanodeStorageInfo[] targets) {
     assert(block != null && targets != null && targets.length > 0);
     replicateBlocks.offer(new BlockTargetPair(block, targets));
   }
@@ -650,10 +672,10 @@ public class DatanodeDescriptor extends DatanodeInfo {
    */
   void addBlockToBeErasureCoded(ExtendedBlock block,
       DatanodeDescriptor[] sources, DatanodeStorageInfo[] targets,
-      byte[] liveBlockIndices, ErasureCodingPolicy ecPolicy) {
+      byte[] liveBlockIndices, byte[] excludeReconstrutedIndices, ErasureCodingPolicy ecPolicy) {
     assert (block != null && sources != null && sources.length > 0);
     BlockECReconstructionInfo task = new BlockECReconstructionInfo(block,
-        sources, targets, liveBlockIndices, ecPolicy);
+        sources, targets, liveBlockIndices, excludeReconstrutedIndices, ecPolicy);
     erasurecodeBlocks.offer(task);
     BlockManager.LOG.debug("Adding block reconstruction task " + task + "to "
         + getName() + ", current queue size is " + erasurecodeBlocks.size());
@@ -698,7 +720,8 @@ public class DatanodeDescriptor extends DatanodeInfo {
     return erasurecodeBlocks.size();
   }
 
-  int getNumberOfReplicateBlocks() {
+  @VisibleForTesting
+  public int getNumberOfReplicateBlocks() {
     return replicateBlocks.size();
   }
 
@@ -1066,4 +1089,3 @@ public class DatanodeDescriptor extends DatanodeInfo {
     return false;
   }
 }
-

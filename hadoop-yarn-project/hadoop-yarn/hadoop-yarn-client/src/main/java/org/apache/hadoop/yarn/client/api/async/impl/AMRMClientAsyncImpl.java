@@ -37,6 +37,7 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.NodeReport;
+import org.apache.hadoop.yarn.api.records.PreemptionMessage;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.RejectedSchedulingRequest;
 import org.apache.hadoop.yarn.api.records.Resource;
@@ -53,7 +54,7 @@ import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -286,6 +287,11 @@ extends AMRMClientAsync<T> {
                               List<String> blacklistRemovals) {
     client.updateBlacklist(blacklistAdditions, blacklistRemovals);
   }
+
+  @Override
+  public void updateTrackingUrl(String trackingUrl) {
+    client.updateTrackingUrl(trackingUrl);
+  }
   
   private class HeartbeatThread extends Thread {
     public HeartbeatThread() {
@@ -394,6 +400,14 @@ extends AMRMClientAsync<T> {
           List<Container> allocated = response.getAllocatedContainers();
           if (!allocated.isEmpty()) {
             handler.onContainersAllocated(allocated);
+          }
+
+          PreemptionMessage preemptionMessage = response.getPreemptionMessage();
+          if (preemptionMessage != null) {
+            if (handler instanceof AMRMClientAsync.AbstractCallbackHandler) {
+              ((AMRMClientAsync.AbstractCallbackHandler) handler)
+                  .onPreemptionMessageReceived(preemptionMessage);
+            }
           }
 
           if (!response.getContainersFromPreviousAttempts().isEmpty()) {

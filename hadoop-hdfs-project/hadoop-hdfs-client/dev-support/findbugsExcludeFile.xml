@@ -6,6 +6,7 @@
       <Class name="org.apache.hadoop.hdfs.inotify.EventBatch"/>
       <Class name="org.apache.hadoop.hdfs.protocol.HdfsFileStatus"/>
       <Class name="org.apache.hadoop.hdfs.protocol.LocatedBlock"/>
+      <Class name="org.apache.hadoop.hdfs.protocol.BatchedDirectoryListing" />
       <Class name="org.apache.hadoop.hdfs.protocol.BlockStoragePolicy"/>
       <Class name="org.apache.hadoop.hdfs.protocol.CorruptFileBlocks"/>
       <Class name="org.apache.hadoop.hdfs.protocol.StripedBlockInfo"/>
@@ -91,10 +92,18 @@
     <Method name="getSymlinkInBytes" />
     <Bug pattern="EI_EXPOSE_REP" />
   </Match>
+
+  <!--okhttp classes from Kotlin are not analysed for NP check. -->
   <Match>
-    <Class name="org.apache.hadoop.hdfs.protocolPB.PBHelperClient" />
-    <Method name="getFixedByteString" />
-    <Bug pattern="AT_OPERATION_SEQUENCE_ON_CONCURRENT_ABSTRACTION" />
+    <Class name="org.apache.hadoop.hdfs.web.oauth2.ConfRefreshTokenBasedAccessTokenProvider" />
+    <Method name="refresh" />
+    <Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE" />
+  </Match>
+
+  <Match>
+    <Class name="org.apache.hadoop.hdfs.web.oauth2.CredentialBasedAccessTokenProvider" />
+    <Method name="refresh" />
+    <Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE" />
   </Match>
 
 </FindBugsFilter>

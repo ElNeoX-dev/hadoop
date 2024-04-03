@@ -37,6 +37,8 @@ public final class Constants {
   public static final String CREDENTIALS_PROVIDER_KEY =
       "fs.oss.credentials.provider";
 
+  public static final int OSS_DEFAULT_PORT = -1;
+
   // OSS access verification
   public static final String ACCESS_KEY_ID = "fs.oss.accessKeyId";
   public static final String ACCESS_KEY_SECRET = "fs.oss.accessKeySecret";
@@ -152,4 +154,8 @@ public final class Constants {
   public static final String UPLOAD_ACTIVE_BLOCKS_KEY =
       "fs.oss.upload.active.blocks";
   public static final int UPLOAD_ACTIVE_BLOCKS_DEFAULT = 4;
+
+  public static final String LIST_VERSION = "fs.oss.list.version";
+
+  public static final int DEFAULT_LIST_VERSION = 2;
 }

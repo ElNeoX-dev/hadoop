@@ -28,8 +28,8 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
@@ -44,7 +44,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMSta
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
 import org.apache.hadoop.yarn.server.security.MasterKeyData;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * AMRM-tokens are per ApplicationAttempt. If users redistribute their
@@ -56,8 +56,8 @@ import com.google.common.annotations.VisibleForTesting;
 public class AMRMTokenSecretManager extends
     SecretManager<AMRMTokenIdentifier> {
 
-  private static final Log LOG = LogFactory
-    .getLog(AMRMTokenSecretManager.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(AMRMTokenSecretManager.class);
 
   private int serialNo = new SecureRandom().nextInt();
   private MasterKeyData nextMasterKey;
@@ -76,7 +76,9 @@ public class AMRMTokenSecretManager extends
       new HashSet<ApplicationAttemptId>();
 
   /**
-   * Create an {@link AMRMTokenSecretManager}
+   * Create an {@link AMRMTokenSecretManager}.
+   * @param conf configuration.
+   * @param rmContext rm context.
    */
   public AMRMTokenSecretManager(Configuration conf, RMContext rmContext) {
     this.rmContext = rmContext;
@@ -219,6 +221,8 @@ public class AMRMTokenSecretManager extends
 
   /**
    * Populate persisted password of AMRMToken back to AMRMTokenSecretManager.
+   * @param token AMRMTokenIdentifier.
+   * @throws IOException an I/O exception has occurred.
    */
   public void addPersistedPassword(Token<AMRMTokenIdentifier> token)
       throws IOException {
@@ -243,9 +247,7 @@ public class AMRMTokenSecretManager extends
     try {
       ApplicationAttemptId applicationAttemptId =
           identifier.getApplicationAttemptId();
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Trying to retrieve password for " + applicationAttemptId);
-      }
+      LOG.debug("Trying to retrieve password for {}", applicationAttemptId);
       if (!appAttemptSet.contains(applicationAttemptId)) {
         throw new InvalidToken(applicationAttemptId
             + " not found in AMRMTokenSecretManager.");

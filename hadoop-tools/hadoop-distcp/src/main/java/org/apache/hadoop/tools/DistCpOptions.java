@@ -18,9 +18,9 @@
 
 package org.apache.hadoop.tools;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,8 +30,10 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.tools.util.DistCpUtils;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
@@ -155,6 +157,11 @@ public final class DistCpOptions {
 
   private final int copyBufferSize;
 
+  /** Whether data should be written directly to the target paths. */
+  private final boolean directWrite;
+
+  private final boolean useIterator;
+
   /**
    * File attributes for preserve.
    *
@@ -216,6 +223,10 @@ public final class DistCpOptions {
     this.copyBufferSize = builder.copyBufferSize;
     this.verboseLog = builder.verboseLog;
     this.trackPath = builder.trackPath;
+
+    this.directWrite = builder.directWrite;
+
+    this.useIterator = builder.useIterator;
   }
 
   public Path getSourceFileListing() {
@@ -224,7 +235,18 @@ public final class DistCpOptions {
 
   public List<Path> getSourcePaths() {
     return sourcePaths == null ?
-        null : Collections.unmodifiableList(sourcePaths);
+        null :
+        Collections.unmodifiableList(getUniquePaths(sourcePaths));
+  }
+
+  private List<Path> getUniquePaths(List<Path> srcPaths) {
+    Set<Path> uniquePaths = new LinkedHashSet<>();
+    for (Path path : srcPaths) {
+      if (!uniquePaths.add(path)) {
+        LOG.info("Path: {} added multiple times, ignoring the redundant entry.", path);
+      }
+    }
+    return new ArrayList<>(uniquePaths);
   }
 
   public Path getTargetPath() {
@@ -343,6 +365,14 @@ public final class DistCpOptions {
     return trackPath;
   }
 
+  public boolean shouldDirectWrite() {
+    return directWrite;
+  }
+
+  public boolean shouldUseIterator() {
+    return useIterator;
+  }
+
   /**
    * Add options to configuration. These will be used in the Mapper/committer
    *
@@ -391,6 +421,11 @@ public final class DistCpOptions {
       DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.NUM_LISTSTATUS_THREADS,
           Integer.toString(numListstatusThreads));
     }
+    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.DIRECT_WRITE,
+            String.valueOf(directWrite));
+
+    DistCpOptionSwitch.addToConf(conf, DistCpOptionSwitch.USE_ITERATOR,
+        String.valueOf(useIterator));
   }
 
   /**
@@ -427,6 +462,8 @@ public final class DistCpOptions {
         ", blocksPerChunk=" + blocksPerChunk +
         ", copyBufferSize=" + copyBufferSize +
         ", verboseLog=" + verboseLog +
+        ", directWrite=" + directWrite +
+        ", useiterator=" + useIterator +
         '}';
   }
 
@@ -475,6 +512,10 @@ public final class DistCpOptions {
 
     private int copyBufferSize =
             DistCpConstants.COPY_BUFFER_SIZE_DEFAULT;
+
+    private boolean directWrite = false;
+
+    private boolean useIterator = false;
 
     public Builder(List<Path> sourcePaths, Path targetPath) {
       Preconditions.checkArgument(sourcePaths != null && !sourcePaths.isEmpty(),
@@ -628,7 +669,24 @@ public final class DistCpOptions {
       return this;
     }
 
+    /**
+     * whether builder with crc.
+     * @param newSkipCRC whether to skip crc check
+     * @return  Builder object whether to skip crc check
+     * @deprecated Use {@link #withSkipCRC(boolean)} instead.
+     */
+    @Deprecated
     public Builder withCRC(boolean newSkipCRC) {
+      this.skipCRC = newSkipCRC;
+      return this;
+    }
+
+    /**
+     * whether builder with crc.
+     * @param newSkipCRC whether to skip crc check
+     * @return  Builder object whether to skip crc check
+     */
+    public Builder withSkipCRC(boolean newSkipCRC) {
       this.skipCRC = newSkipCRC;
       return this;
     }
@@ -726,6 +784,16 @@ public final class DistCpOptions {
 
     public Builder withVerboseLog(boolean newVerboseLog) {
       this.verboseLog = newVerboseLog;
+      return this;
+    }
+
+    public Builder withDirectWrite(boolean newDirectWrite) {
+      this.directWrite = newDirectWrite;
+      return this;
+    }
+
+    public Builder withUseIterator(boolean useItr) {
+      this.useIterator = useItr;
       return this;
     }
   }

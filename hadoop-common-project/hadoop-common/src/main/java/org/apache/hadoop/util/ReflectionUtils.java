@@ -29,8 +29,10 @@ import java.lang.management.ThreadMXBean;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -114,8 +116,9 @@ public class ReflectionUtils {
     }
   }
 
-  /** Create an object for the given class and initialize it from conf
-   * 
+  /** Create an object for the given class and initialize it from conf.
+   *
+   * @param <T> Generics Type.
    * @param theClass class of which an object is created
    * @param conf Configuration
    * @return a new object
@@ -222,7 +225,7 @@ public class ReflectionUtils {
         try {
           ByteArrayOutputStream buffer = new ByteArrayOutputStream();
           printThreadInfo(new PrintStream(buffer, false, "UTF-8"), title);
-          log.info(buffer.toString(Charset.defaultCharset().name()));
+          log.info(buffer.toString(StandardCharsets.UTF_8.name()));
         } catch (UnsupportedEncodingException ignored) {
         }
       }
@@ -251,7 +254,7 @@ public class ReflectionUtils {
         try {
           ByteArrayOutputStream buffer = new ByteArrayOutputStream();
           printThreadInfo(new PrintStream(buffer, false, "UTF-8"), title);
-          log.info(buffer.toString(Charset.defaultCharset().name()));
+          log.info(buffer.toString(StandardCharsets.UTF_8.name()));
         } catch (UnsupportedEncodingException ignored) {
         }
       }
@@ -260,7 +263,8 @@ public class ReflectionUtils {
 
   /**
    * Return the correctly-typed {@link Class} of the given object.
-   *  
+   *
+   * @param <T> Generics Type T
    * @param o object whose correctly-typed <code>Class</code> is to be obtained
    * @return the correctly typed <code>Class</code> of the given object.
    */
@@ -310,11 +314,14 @@ public class ReflectionUtils {
   }
   
   /**
-   * Make a copy of the writable object using serialization to a buffer
+   * Make a copy of the writable object using serialization to a buffer.
+   *
+   * @param <T> Generics Type.
+   * @param conf input Configuration.
    * @param src the object to copy from
    * @param dst the object to copy into, which is destroyed
    * @return dst param (the copy)
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @SuppressWarnings("unchecked")
   public static <T> T copy(Configuration conf, 
@@ -344,13 +351,20 @@ public class ReflectionUtils {
   }
   
   /**
-   * Gets all the declared fields of a class including fields declared in
+   * @return Gets all the declared fields of a class including fields declared in
    * superclasses.
+   * @param clazz input clazz.
    */
   public static List<Field> getDeclaredFieldsIncludingInherited(Class<?> clazz) {
     List<Field> fields = new ArrayList<Field>();
     while (clazz != null) {
-      for (Field field : clazz.getDeclaredFields()) {
+      Field[] sortedFields = clazz.getDeclaredFields();
+      Arrays.sort(sortedFields, new Comparator<Field>() {
+        public int compare(Field a, Field b) {
+          return a.getName().compareTo(b.getName());
+        }
+      });
+      for (Field field : sortedFields) {
         fields.add(field);
       }
       clazz = clazz.getSuperclass();
@@ -360,8 +374,9 @@ public class ReflectionUtils {
   }
   
   /**
-   * Gets all the declared methods of a class including methods declared in
+   * @return Gets all the declared methods of a class including methods declared in
    * superclasses.
+   * @param clazz input clazz.
    */
   public static List<Method> getDeclaredMethodsIncludingInherited(Class<?> clazz) {
     List<Method> methods = new ArrayList<Method>();

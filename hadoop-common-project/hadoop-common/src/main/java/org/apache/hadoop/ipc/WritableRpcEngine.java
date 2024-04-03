@@ -39,8 +39,8 @@ import org.apache.hadoop.util.Time;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.*;
-import org.apache.htrace.core.TraceScope;
-import org.apache.htrace.core.Tracer;
+import org.apache.hadoop.tracing.TraceScope;
+import org.apache.hadoop.tracing.Tracer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -181,17 +181,17 @@ public class WritableRpcEngine implements RpcEngine {
     @Override
     public String toString() {
       StringBuilder buffer = new StringBuilder();
-      buffer.append(methodName);
-      buffer.append("(");
+      buffer.append(methodName)
+          .append("(");
       for (int i = 0; i < parameters.length; i++) {
         if (i != 0)
           buffer.append(", ");
         buffer.append(parameters[i]);
       }
-      buffer.append(")");
-      buffer.append(", rpc version="+rpcVersion);
-      buffer.append(", client version="+clientVersion);
-      buffer.append(", methodsFingerPrint="+clientMethodsHash);
+      buffer.append(")")
+          .append(", rpc version="+rpcVersion)
+          .append(", client version="+clientVersion)
+          .append(", methodsFingerPrint="+clientMethodsHash);
       return buffer.toString();
     }
 
@@ -214,16 +214,19 @@ public class WritableRpcEngine implements RpcEngine {
     private Client client;
     private boolean isClosed = false;
     private final AtomicBoolean fallbackToSimpleAuth;
+    private final AlignmentContext alignmentContext;
 
     public Invoker(Class<?> protocol,
                    InetSocketAddress address, UserGroupInformation ticket,
                    Configuration conf, SocketFactory factory,
-                   int rpcTimeout, AtomicBoolean fallbackToSimpleAuth)
+                   int rpcTimeout, AtomicBoolean fallbackToSimpleAuth,
+                   AlignmentContext alignmentContext)
         throws IOException {
       this.remoteId = Client.ConnectionId.getConnectionId(address, protocol,
           ticket, rpcTimeout, null, conf);
       this.client = CLIENTS.getClient(conf, factory);
       this.fallbackToSimpleAuth = fallbackToSimpleAuth;
+      this.alignmentContext = alignmentContext;
     }
 
     @Override
@@ -246,7 +249,7 @@ public class WritableRpcEngine implements RpcEngine {
       try {
         value = (ObjectWritable)
           client.call(RPC.RpcKind.RPC_WRITABLE, new Invocation(method, args),
-            remoteId, fallbackToSimpleAuth);
+            remoteId, fallbackToSimpleAuth, alignmentContext);
       } finally {
         if (traceScope != null) traceScope.close();
       }
@@ -279,9 +282,20 @@ public class WritableRpcEngine implements RpcEngine {
     return CLIENTS.getClient(conf);
   }
   
-  /** Construct a client-side proxy object that implements the named protocol,
+  /**
+   * Construct a client-side proxy object that implements the named protocol,
    * talking to a server at the named address. 
-   * @param <T>*/
+   * @param <T> Generics Type T
+   * @param protocol input protocol.
+   * @param clientVersion input clientVersion.
+   * @param addr input addr.
+   * @param ticket input ticket.
+   * @param conf input configuration.
+   * @param factory input factory.
+   * @param rpcTimeout input rpcTimeout.
+   * @param connectionRetryPolicy input connectionRetryPolicy.
+   * @throws IOException raised on errors performing I/O.
+   */
   @Override
   public <T> ProtocolProxy<T> getProxy(Class<T> protocol, long clientVersion,
                          InetSocketAddress addr, UserGroupInformation ticket,
@@ -289,19 +303,56 @@ public class WritableRpcEngine implements RpcEngine {
                          int rpcTimeout, RetryPolicy connectionRetryPolicy)
     throws IOException {
     return getProxy(protocol, clientVersion, addr, ticket, conf, factory,
-      rpcTimeout, connectionRetryPolicy, null);
+      rpcTimeout, connectionRetryPolicy, null, null);
   }
 
-  /** Construct a client-side proxy object that implements the named protocol,
+  /**
+   * Construct a client-side proxy object with a ConnectionId.
+   *
+   * @param <T> Generics Type T.
+   * @param protocol input protocol.
+   * @param clientVersion input clientVersion.
+   * @param connId input ConnectionId.
+   * @param conf input Configuration.
+   * @param factory input factory.
+   * @param alignmentContext Alignment context
+   * @throws IOException raised on errors performing I/O.
+   * @return ProtocolProxy.
+   */
+  @Override
+  public <T> ProtocolProxy<T> getProxy(Class<T> protocol, long clientVersion,
+      Client.ConnectionId connId, Configuration conf, SocketFactory factory,
+      AlignmentContext alignmentContext)
+      throws IOException {
+    return getProxy(protocol, clientVersion, connId.getAddress(),
+        connId.getTicket(), conf, factory, connId.getRpcTimeout(),
+        connId.getRetryPolicy(), null, alignmentContext);
+  }
+
+  /**
+   * Construct a client-side proxy object that implements the named protocol,
    * talking to a server at the named address. 
-   * @param <T>*/
+   * @param <T> Generics Type.
+   * @param protocol input protocol.
+   * @param clientVersion input clientVersion.
+   * @param addr input addr.
+   * @param ticket input ticket.
+   * @param conf input configuration.
+   * @param factory input factory.
+   * @param rpcTimeout input rpcTimeout.
+   * @param connectionRetryPolicy input connectionRetryPolicy.
+   * @param fallbackToSimpleAuth input fallbackToSimpleAuth.
+   * @param alignmentContext input alignmentContext.
+   * @return ProtocolProxy.
+   */
   @Override
   @SuppressWarnings("unchecked")
   public <T> ProtocolProxy<T> getProxy(Class<T> protocol, long clientVersion,
                          InetSocketAddress addr, UserGroupInformation ticket,
                          Configuration conf, SocketFactory factory,
                          int rpcTimeout, RetryPolicy connectionRetryPolicy,
-                         AtomicBoolean fallbackToSimpleAuth)
+                         AtomicBoolean fallbackToSimpleAuth,
+                         AlignmentContext alignmentContext)
     throws IOException {    
 
     if (connectionRetryPolicy != null) {
@@ -311,7 +362,7 @@ public class WritableRpcEngine implements RpcEngine {
 
     T proxy = (T) Proxy.newProxyInstance(protocol.getClassLoader(),
         new Class[] { protocol }, new Invoker(protocol, addr, ticket, conf,
-            factory, rpcTimeout, fallbackToSimpleAuth));
+            factory, rpcTimeout, fallbackToSimpleAuth, alignmentContext));
     return new ProtocolProxy<T>(protocol, proxy, true);
   }
   
@@ -323,11 +374,11 @@ public class WritableRpcEngine implements RpcEngine {
                       int numHandlers, int numReaders, int queueSizePerHandler,
                       boolean verbose, Configuration conf,
                       SecretManager<? extends TokenIdentifier> secretManager,
-                      String portRangeConfig) 
+                      String portRangeConfig, AlignmentContext alignmentContext)
     throws IOException {
     return new Server(protocolClass, protocolImpl, conf, bindAddress, port,
         numHandlers, numReaders, queueSizePerHandler, verbose, secretManager,
-        portRangeConfig);
+        portRangeConfig, alignmentContext);
   }
 
 
@@ -341,7 +392,8 @@ public class WritableRpcEngine implements RpcEngine {
      * @param bindAddress the address to bind on to listen for connection
      * @param port the port to listen for connections on
      * 
-     * @deprecated Use #Server(Class, Object, Configuration, String, int)    
+     * @deprecated Use #Server(Class, Object, Configuration, String, int)
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Server(Object instance, Configuration conf, String bindAddress,
@@ -356,6 +408,7 @@ public class WritableRpcEngine implements RpcEngine {
      * @param conf the configuration to use
      * @param bindAddress the address to bind on to listen for connection
      * @param port the port to listen for connections on
+     * @throws IOException raised on errors performing I/O.
      */
     public Server(Class<?> protocolClass, Object protocolImpl, 
         Configuration conf, String bindAddress, int port) 
@@ -372,9 +425,13 @@ public class WritableRpcEngine implements RpcEngine {
      * @param port the port to listen for connections on
      * @param numHandlers the number of method handler threads to run
      * @param verbose whether each call should be logged
+     * @param numReaders input numberReaders.
+     * @param queueSizePerHandler input queueSizePerHandler.
+     * @param secretManager input secretManager.
      * 
      * @deprecated use Server#Server(Class, Object, 
      *      Configuration, String, int, int, int, int, boolean, SecretManager)
+     * @throws IOException raised on errors performing I/O.
      */
     @Deprecated
     public Server(Object protocolImpl, Configuration conf, String bindAddress,
@@ -397,18 +454,55 @@ public class WritableRpcEngine implements RpcEngine {
      * @param port the port to listen for connections on
      * @param numHandlers the number of method handler threads to run
      * @param verbose whether each call should be logged
+     * @param secretManager input secretManager.
+     * @param queueSizePerHandler input queueSizePerHandler.
+     * @param portRangeConfig input portRangeConfig.
+     * @param numReaders input numReaders.
+     *
+     * @deprecated use Server#Server(Class, Object,
+     *      Configuration, String, int, int, int, int, boolean, SecretManager)
+     * @throws IOException raised on errors performing I/O.
      */
+    @Deprecated
     public Server(Class<?> protocolClass, Object protocolImpl,
         Configuration conf, String bindAddress,  int port,
         int numHandlers, int numReaders, int queueSizePerHandler, 
         boolean verbose, SecretManager<? extends TokenIdentifier> secretManager,
         String portRangeConfig) 
         throws IOException {
+      this(null, protocolImpl,  conf,  bindAddress,   port,
+          numHandlers,  numReaders,  queueSizePerHandler,  verbose,
+          secretManager, null, null);
+    }
+
+    /**
+     * Construct an RPC server.
+     * @param protocolClass - the protocol being registered
+     *     can be null for compatibility with old usage (see below for details)
+     * @param protocolImpl the protocol impl that will be called
+     * @param conf the configuration to use
+     * @param bindAddress the address to bind on to listen for connection
+     * @param port the port to listen for connections on
+     * @param numHandlers the number of method handler threads to run
+     * @param verbose whether each call should be logged
+     * @param alignmentContext provides server state info on client responses
+     * @param numReaders input numReaders.
+     * @param portRangeConfig input portRangeConfig.
+     * @param queueSizePerHandler input queueSizePerHandler.
+     * @param secretManager input secretManager.
+     * @throws IOException raised on errors performing I/O.
+     */
+    public Server(Class<?> protocolClass, Object protocolImpl,
+        Configuration conf, String bindAddress,  int port,
+        int numHandlers, int numReaders, int queueSizePerHandler,
+        boolean verbose, SecretManager<? extends TokenIdentifier> secretManager,
+        String portRangeConfig, AlignmentContext alignmentContext)
+        throws IOException {
       super(bindAddress, port, null, numHandlers, numReaders,
           queueSizePerHandler, conf,
-          classNameBase(protocolImpl.getClass().getName()), secretManager,
+          serverNameFromClass(protocolImpl.getClass()), secretManager,
           portRangeConfig);
-
+      setAlignmentContext(alignmentContext);
       this.verbose = verbose;
       
       
@@ -506,15 +600,15 @@ public class WritableRpcEngine implements RpcEngine {
         }
 
         // Invoke the protocol method
-        long startTime = Time.now();
-        int qTime = (int) (startTime-receivedTime);
         Exception exception = null;
+        Call currentCall = Server.getCurCall().get();
         try {
           Method method =
               protocolImpl.protocolClass.getMethod(call.getMethodName(),
               call.getParameterClasses());
           method.setAccessible(true);
           server.rpcDetailedMetrics.init(protocolImpl.protocolClass);
+          currentCall.setDetailedMetricsName(call.getMethodName());
           Object value = 
               method.invoke(protocolImpl.protocolImpl, call.getParameters());
           if (server.verbose) log("Return: "+value);
@@ -540,20 +634,10 @@ public class WritableRpcEngine implements RpcEngine {
           exception = ioe;
           throw ioe;
         } finally {
-          int processingTime = (int) (Time.now() - startTime);
-          if (LOG.isDebugEnabled()) {
-            String msg = "Served: " + call.getMethodName() +
-                " queueTime= " + qTime + " procesingTime= " + processingTime;
-            if (exception != null) {
-              msg += " exception= " + exception.getClass().getSimpleName();
-            }
-            LOG.debug(msg);
+          if (exception != null) {
+            currentCall.setDetailedMetricsName(
+                exception.getClass().getSimpleName());
           }
-          String detailedMetricsName = (exception == null) ?
-              call.getMethodName() :
-              exception.getClass().getSimpleName();
-          server
-              .updateMetrics(detailedMetricsName, qTime, processingTime, false);
         }
       }
     }

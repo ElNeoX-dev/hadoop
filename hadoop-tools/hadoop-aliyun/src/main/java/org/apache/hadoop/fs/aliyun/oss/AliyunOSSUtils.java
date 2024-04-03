@@ -20,10 +20,12 @@ package org.apache.hadoop.fs.aliyun.oss;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 
 import com.aliyun.oss.common.auth.CredentialsProvider;
-import com.google.common.base.Preconditions;
-import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.security.ProviderUtils;
@@ -38,7 +40,7 @@ import static org.apache.hadoop.fs.aliyun.oss.Constants.*;
 final public class AliyunOSSUtils {
   private static final Logger LOG =
       LoggerFactory.getLogger(AliyunOSSUtils.class);
-  private static LocalDirAllocator directoryAllocator;
+  private static volatile LocalDirAllocator directoryAllocator;
 
   private AliyunOSSUtils() {
   }
@@ -95,13 +97,14 @@ final public class AliyunOSSUtils {
    * Create credential provider specified by configuration, or create default
    * credential provider if not specified.
    *
+   * @param uri uri passed by caller
    * @param conf configuration
    * @return a credential provider
    * @throws IOException on any problem. Class construction issues may be
    * nested inside the IOE.
    */
-  public static CredentialsProvider getCredentialsProvider(Configuration conf)
-      throws IOException {
+  public static CredentialsProvider getCredentialsProvider(
+      URI uri, Configuration conf) throws IOException {
     CredentialsProvider credentials;
 
     String className = conf.getTrimmed(CREDENTIALS_PROVIDER_KEY);
@@ -117,7 +120,7 @@ final public class AliyunOSSUtils {
         try {
           credentials =
               (CredentialsProvider)credClass.getDeclaredConstructor(
-                  Configuration.class).newInstance(conf);
+                  URI.class, Configuration.class).newInstance(uri, conf);
         } catch (NoSuchMethodException | SecurityException e) {
           credentials =
               (CredentialsProvider)credClass.getDeclaredConstructor()
@@ -169,21 +172,33 @@ final public class AliyunOSSUtils {
 
   /**
    * Demand create the directory allocator, then create a temporary file.
-   *  @param path prefix for the temporary file
-   *  @param size the size of the file that is going to be written
-   *  @param conf the Configuration object
-   *  @return a unique temporary file
-   *  @throws IOException IO problems
+   * This does not mark the file for deletion when a process exits.
+   * {@link LocalDirAllocator#createTmpFileForWrite(
+   * String, long, Configuration)}.
+   * @param pathStr prefix for the temporary file
+   * @param size the size of the file that is going to be written
+   * @param conf the Configuration object
+   * @return a unique temporary file
+   * @throws IOException IO problems
    */
-  public static File createTmpFileForWrite(String path, long size,
+  public static File createTmpFileForWrite(String pathStr, long size,
       Configuration conf) throws IOException {
     if (conf.get(BUFFER_DIR_KEY) == null) {
       conf.set(BUFFER_DIR_KEY, conf.get("hadoop.tmp.dir") + "/oss");
     }
     if (directoryAllocator == null) {
-      directoryAllocator = new LocalDirAllocator(BUFFER_DIR_KEY);
+      synchronized (AliyunOSSUtils.class) {
+        if (directoryAllocator == null) {
+          directoryAllocator = new LocalDirAllocator(BUFFER_DIR_KEY);
+        }
+      }
     }
-    return directoryAllocator.createTmpFileForWrite(path, size, conf);
+    Path path = directoryAllocator.getLocalPathForWrite(pathStr,
+        size, conf);
+    File dir = new File(path.getParent().toUri().getPath());
+    String prefix = path.getName();
+    // create a temp file on this directory
+    return File.createTempFile(prefix, null, dir);
   }
 
   /**

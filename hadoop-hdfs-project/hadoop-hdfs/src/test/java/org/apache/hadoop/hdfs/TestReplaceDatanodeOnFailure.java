@@ -17,14 +17,14 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -45,7 +45,8 @@ import org.junit.Test;
  * This class tests that data nodes are correctly replaced on failure.
  */
 public class TestReplaceDatanodeOnFailure {
-  static final Log LOG = LogFactory.getLog(TestReplaceDatanodeOnFailure.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestReplaceDatanodeOnFailure.class);
 
   static final String DIR = "/" + TestReplaceDatanodeOnFailure.class.getSimpleName() + "/";
   static final short REPLICATION = 3;
@@ -64,7 +65,7 @@ public class TestReplaceDatanodeOnFailure {
 
     final DatanodeInfo[] infos = new DatanodeInfo[5];
     final DatanodeInfo[][] datanodes = new DatanodeInfo[infos.length + 1][];
-    datanodes[0] = new DatanodeInfo[0];
+    datanodes[0] = DatanodeInfo.EMPTY_ARRAY;
     for(int i = 0; i < infos.length; ) {
       infos[i] = DFSTestUtil.getLocalDatanodeInfo(9867 + i);
       i++;

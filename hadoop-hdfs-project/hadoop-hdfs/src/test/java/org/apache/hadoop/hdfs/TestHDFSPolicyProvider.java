@@ -19,16 +19,14 @@ package org.apache.hadoop.hdfs;
 
 import static org.junit.Assert.*;
 
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-import com.google.common.collect.Sets;
-import org.apache.commons.lang.ClassUtils;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
+import org.apache.commons.lang3.ClassUtils;
 import org.apache.hadoop.hdfs.qjournal.server.JournalNodeRpcServer;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeRpcServer;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;

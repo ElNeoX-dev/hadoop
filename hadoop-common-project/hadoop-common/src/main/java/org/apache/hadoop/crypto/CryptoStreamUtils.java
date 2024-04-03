@@ -27,36 +27,59 @@ import java.nio.ByteBuffer;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Seekable;
+import org.apache.hadoop.util.CleanerUtil;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @InterfaceAudience.Private
 public class CryptoStreamUtils {
   private static final int MIN_BUFFER_SIZE = 512;
-  
-  /** Forcibly free the direct buffer. */
+  private static final Logger LOG =
+      LoggerFactory.getLogger(CryptoStreamUtils.class);
+
+  /**
+   * Forcibly free the direct buffer.
+   * @param buffer input buffer.
+   */
   public static void freeDB(ByteBuffer buffer) {
-    if (buffer instanceof sun.nio.ch.DirectBuffer) {
-      final sun.misc.Cleaner bufferCleaner =
-          ((sun.nio.ch.DirectBuffer) buffer).cleaner();
-      bufferCleaner.clean();
+    if (CleanerUtil.UNMAP_SUPPORTED) {
+      try {
+        CleanerUtil.getCleaner().freeBuffer(buffer);
+      } catch (IOException e) {
+        LOG.info("Failed to free the buffer", e);
+      }
+    } else {
+      LOG.trace(CleanerUtil.UNMAP_NOT_SUPPORTED_REASON);
     }
   }
-  
-  /** Read crypto buffer size */
+
+  /**
+   * @return Read crypto buffer size.
+   * @param conf input Configuration.
+   */
   public static int getBufferSize(Configuration conf) {
     return conf.getInt(HADOOP_SECURITY_CRYPTO_BUFFER_SIZE_KEY, 
         HADOOP_SECURITY_CRYPTO_BUFFER_SIZE_DEFAULT);
   }
   
-  /** AES/CTR/NoPadding is required */
+  /**
+   * AES/CTR/NoPadding is required.
+   * @param codec input code.
+   */
   public static void checkCodec(CryptoCodec codec) {
     if (codec.getCipherSuite() != CipherSuite.AES_CTR_NOPADDING) {
       throw new UnsupportedCodecException("AES/CTR/NoPadding is required");
     }
   }
 
-  /** Check and floor buffer size */
+  /**
+   * @return Check and floor buffer size.
+   *
+   * @param codec input code.
+   * @param bufferSize input bufferSize.
+   */
   public static int checkBufferSize(CryptoCodec codec, int bufferSize) {
     Preconditions.checkArgument(bufferSize >= MIN_BUFFER_SIZE, 
         "Minimum value of buffer size is " + MIN_BUFFER_SIZE + ".");
@@ -65,8 +88,10 @@ public class CryptoStreamUtils {
   }
   
   /**
-   * If input stream is {@link org.apache.hadoop.fs.Seekable}, return it's
-   * current position, otherwise return 0;
+   * @return If input stream is {@link org.apache.hadoop.fs.Seekable}, return it's
+   * current position, otherwise return 0.
+   * @param in input in.
+   * @throws IOException raised on errors performing I/O.
    */
   public static long getInputStreamOffset(InputStream in) throws IOException {
     if (in instanceof Seekable) {

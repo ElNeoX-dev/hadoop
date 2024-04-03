@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.qjournal.server;
 
-import com.google.common.base.Charsets;
-import com.google.common.primitives.Bytes;
-import com.google.common.primitives.Ints;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Bytes;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Ints;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
@@ -159,11 +159,11 @@ public class TestJournalNode {
             HdfsServerConstants.StartupOption.REGULAR);
         NamespaceInfo fakeNameSpaceInfo = new NamespaceInfo(
             12345, "mycluster", "my-bp"+nsId, 0L);
-        journal.format(fakeNameSpaceInfo);
+        journal.format(fakeNameSpaceInfo, false);
       }
     } else {
       journal = jn.getOrCreateJournal(journalId);
-      journal.format(FAKE_NSINFO);
+      journal.format(FAKE_NSINFO, false);
     }
 
     

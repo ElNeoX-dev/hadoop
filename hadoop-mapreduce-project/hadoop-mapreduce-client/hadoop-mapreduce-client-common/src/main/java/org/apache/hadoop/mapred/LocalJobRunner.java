@@ -70,7 +70,7 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.ReflectionUtils;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.util.concurrent.HadoopExecutors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -169,7 +169,7 @@ public class LocalJobRunner implements ClientProtocol {
       // Manage the distributed cache.  If there are files to be copied,
       // this will trigger localFile to be re-written again.
       localDistributedCacheManager = new LocalDistributedCacheManager();
-      localDistributedCacheManager.setup(conf);
+      localDistributedCacheManager.setup(conf, jobid);
       
       // Write out configuration file.  Instead of copying it from
       // systemJobFile, we re-write it, since setup(), above, may have
@@ -593,10 +593,16 @@ public class LocalJobRunner implements ClientProtocol {
 
       } finally {
         try {
-          fs.delete(systemJobFile.getParent(), true);  // delete submit dir
-          localFs.delete(localJobFile, true);              // delete local copy
-          // Cleanup distributed cache
-          localDistributedCacheManager.close();
+          try {
+            // Cleanup distributed cache
+            localDistributedCacheManager.close();
+          } finally {
+            try {
+              fs.delete(systemJobFile.getParent(), true); // delete submit dir
+            } finally {
+              localFs.delete(localJobFile, true);         // delete local copy
+            }
+          }
         } catch (IOException e) {
           LOG.warn("Error cleaning up "+id+": "+e);
         }

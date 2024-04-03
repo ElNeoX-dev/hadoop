@@ -18,26 +18,58 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INITIAL_DELAY_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DU_INTERVAL_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_DU_INTERVAL_KEY;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_GETSPACEUSED_CLASSNAME;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_GETSPACEUSED_JITTER_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_GETSPACEUSED_JITTER_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CACHEREPORT_INTERVAL_MSEC_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_CACHEREPORT_INTERVAL_MSEC_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MAX_RECEIVER_THREADS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MAX_RECEIVER_THREADS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_NODES_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_NODES_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PEER_METRICS_MIN_OUTLIER_DETECTION_SAMPLES_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PEER_STATS_ENABLED_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SLOWPEER_LOW_THRESHOLD_MS_DEFAULT;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SLOWPEER_LOW_THRESHOLD_MS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.List;
+import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationException;
+import org.apache.hadoop.fs.CachingGetSpaceUsed;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.GetSpaceUsed;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.BlockPoolSlice;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsVolumeImpl;
+import org.apache.hadoop.test.LambdaTestUtils;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -48,7 +80,6 @@ import org.junit.Test;
  */
 public class TestDataNodeReconfiguration {
 
-  private static final Log LOG = LogFactory.getLog(TestBlockRecovery.class);
   private static final String DATA_DIR = MiniDFSCluster.getBaseDirectory()
       + "data";
   private final static InetSocketAddress NN_ADDR = new InetSocketAddress(
@@ -56,6 +87,7 @@ public class TestDataNodeReconfiguration {
   private final int NUM_NAME_NODE = 1;
   private final int NUM_DATA_NODE = 10;
   private MiniDFSCluster cluster;
+  private static long counter = 0;
 
   @Before
   public void Setup() throws IOException {
@@ -78,6 +110,7 @@ public class TestDataNodeReconfiguration {
   private void startDFSCluster(int numNameNodes, int numDataNodes)
       throws IOException {
     Configuration conf = new Configuration();
+    conf.setBoolean(DFS_DATANODE_PEER_STATS_ENABLED_KEY, true);
 
     MiniDFSNNTopology nnTopology = MiniDFSNNTopology
         .simpleFederatedTopology(numNameNodes);
@@ -175,55 +208,96 @@ public class TestDataNodeReconfiguration {
   @Test
   public void testAcquireWithMaxConcurrentMoversGreaterThanDefault()
       throws IOException, ReconfigurationException {
-    testAcquireWithMaxConcurrentMoversShared(10);
+    final DataNode[] dns = createDNsForTest(1);
+    try {
+      testAcquireOnMaxConcurrentMoversReconfiguration(dns[0], 10);
+    } finally {
+      dns[0].shutdown();
+    }
   }
 
   @Test
   public void testAcquireWithMaxConcurrentMoversLessThanDefault()
       throws IOException, ReconfigurationException {
-    testAcquireWithMaxConcurrentMoversShared(3);
-  }
-
-  private void testAcquireWithMaxConcurrentMoversShared(
-      int maxConcurrentMovers)
-      throws IOException, ReconfigurationException {
-    DataNode[] dns = null;
+    final DataNode[] dns = createDNsForTest(1);
     try {
-      dns = createDNsForTest(1);
-      testAcquireOnMaxConcurrentMoversReconfiguration(dns[0],
-          maxConcurrentMovers);
-    } catch (IOException ioe) {
-      throw ioe;
-    } catch (ReconfigurationException re) {
-      throw re;
+      testAcquireOnMaxConcurrentMoversReconfiguration(dns[0], 3);
     } finally {
-      shutDownDNs(dns);
+      dns[0].shutdown();
     }
   }
 
-  private void shutDownDNs(DataNode[] dns) {
-    if (dns == null) {
-      return;
-    }
+  /**
+   * Simulates a scenario where the DataNode has been reconfigured with fewer
+   * mover threads, but all of the current treads are busy and therefore the
+   * DataNode is unable to honor this request within a reasonable amount of
+   * time. The DataNode eventually gives up and returns a flag indicating that
+   * the request was not honored.
+   */
+  @Test
+  public void testFailedDecreaseConcurrentMovers()
+      throws IOException, ReconfigurationException {
+    final DataNode[] dns = createDNsForTest(1);
+    final DataNode dataNode = dns[0];
+    try {
+      // Set the current max to 2
+      dataNode.xserver.updateBalancerMaxConcurrentMovers(2);
 
-    for (int i = 0; i < dns.length; i++) {
-      try {
-        if (dns[i] == null) {
-          continue;
-        }
-        dns[i].shutdown();
-      } catch (Exception e) {
-        LOG.error("Cannot close: ", e);
-      }
+      // Simulate grabbing 2 threads
+      dataNode.xserver.balanceThrottler.acquire();
+      dataNode.xserver.balanceThrottler.acquire();
+
+      dataNode.xserver.setMaxReconfigureWaitTime(1);
+
+      // Attempt to set new maximum to 1
+      final boolean success =
+          dataNode.xserver.updateBalancerMaxConcurrentMovers(1);
+      Assert.assertFalse(success);
+    } finally {
+      dataNode.shutdown();
+    }
+  }
+
+  /**
+   * Test with invalid configuration.
+   */
+  @Test(expected = ReconfigurationException.class)
+  public void testFailedDecreaseConcurrentMoversReconfiguration()
+      throws IOException, ReconfigurationException {
+    final DataNode[] dns = createDNsForTest(1);
+    final DataNode dataNode = dns[0];
+    try {
+      // Set the current max to 2
+      dataNode.xserver.updateBalancerMaxConcurrentMovers(2);
+
+      // Simulate grabbing 2 threads
+      dataNode.xserver.balanceThrottler.acquire();
+      dataNode.xserver.balanceThrottler.acquire();
+
+      dataNode.xserver.setMaxReconfigureWaitTime(1);
+
+      // Now try reconfigure maximum downwards with threads released
+      dataNode.reconfigurePropertyImpl(
+          DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY, "1");
+    } catch (ReconfigurationException e) {
+      Assert.assertEquals(DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
+          e.getProperty());
+      Assert.assertEquals("1", e.getNewValue());
+      throw e;
+    } finally {
+      dataNode.shutdown();
     }
   }
 
   private void testAcquireOnMaxConcurrentMoversReconfiguration(
       DataNode dataNode, int maxConcurrentMovers) throws IOException,
       ReconfigurationException {
-    int defaultMaxThreads = dataNode.getConf().getInt(
+    final int defaultMaxThreads = dataNode.getConf().getInt(
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
         DFSConfigKeys.DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_DEFAULT);
+
+    /** Test that the default setup is working */
+
     for (int i = 0; i < defaultMaxThreads; i++) {
       assertEquals("should be able to get thread quota", true,
           dataNode.xserver.balanceThrottler.acquire());
@@ -232,28 +306,485 @@ public class TestDataNodeReconfiguration {
     assertEquals("should not be able to get thread quota", false,
         dataNode.xserver.balanceThrottler.acquire());
 
+    // Give back the threads
+    for (int i = 0; i < defaultMaxThreads; i++) {
+      dataNode.xserver.balanceThrottler.release();
+    }
+
+    /** Test that the change is applied correctly */
+
     // change properties
     dataNode.reconfigureProperty(
         DFS_DATANODE_BALANCE_MAX_NUM_CONCURRENT_MOVES_KEY,
         String.valueOf(maxConcurrentMovers));
 
     assertEquals("thread quota is wrong", maxConcurrentMovers,
-        dataNode.xserver.balanceThrottler.getMaxConcurrentMovers()); // thread quota
+        dataNode.xserver.balanceThrottler.getMaxConcurrentMovers());
 
-    int val = Math.abs(maxConcurrentMovers - defaultMaxThreads);
-    if (defaultMaxThreads < maxConcurrentMovers) {
-      for (int i = 0; i < val; i++) {
-        assertEquals("should be able to get thread quota", true,
-            dataNode.xserver.balanceThrottler.acquire());
-      }
-    } else if (defaultMaxThreads > maxConcurrentMovers) {
-      for (int i = 0; i < val; i++) {
-        assertEquals("should not be able to get thread quota", false,
-            dataNode.xserver.balanceThrottler.acquire());
-      }
+    for (int i = 0; i < maxConcurrentMovers; i++) {
+      assertEquals("should be able to get thread quota", true,
+          dataNode.xserver.balanceThrottler.acquire());
     }
 
     assertEquals("should not be able to get thread quota", false,
         dataNode.xserver.balanceThrottler.acquire());
+  }
+
+  @Test
+  public void testBlockReportIntervalReconfiguration()
+      throws ReconfigurationException {
+    int blockReportInterval = 300 * 1000;
+    String[] blockReportParameters = {
+        DFS_BLOCKREPORT_INTERVAL_MSEC_KEY,
+        DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY,
+        DFS_BLOCKREPORT_INITIAL_DELAY_KEY};
+
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+      BlockPoolManager blockPoolManager = dn.getBlockPoolManager();
+
+      // Try invalid values.
+      for (String blockReportParameter : blockReportParameters) {
+        try {
+          dn.reconfigureProperty(blockReportParameter, "text");
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting NumberFormatException",
+              expected.getCause() instanceof NumberFormatException);
+        }
+      }
+
+      try {
+        dn.reconfigureProperty(DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, String.valueOf(-1));
+        fail("ReconfigurationException expected");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting IllegalArgumentException",
+            expected.getCause() instanceof IllegalArgumentException);
+      }
+      try {
+        dn.reconfigureProperty(DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY, String.valueOf(-1));
+        fail("ReconfigurationException expected");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting IllegalArgumentException",
+            expected.getCause() instanceof IllegalArgumentException);
+      }
+      dn.reconfigureProperty(DFS_BLOCKREPORT_INITIAL_DELAY_KEY, String.valueOf(-1));
+      assertEquals(0, dn.getDnConf().initialBlockReportDelayMs);
+
+      // Change properties and verify the change.
+      dn.reconfigureProperty(DFS_BLOCKREPORT_INTERVAL_MSEC_KEY,
+          String.valueOf(blockReportInterval));
+      for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
+        if (bpos != null) {
+          for (BPServiceActor actor : bpos.getBPServiceActors()) {
+            assertEquals(String.format("%s has wrong value",
+                DFS_BLOCKREPORT_INTERVAL_MSEC_KEY),
+                blockReportInterval,
+                actor.getScheduler().getBlockReportIntervalMs());
+          }
+        }
+      }
+
+      dn.reconfigureProperty(DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY, String.valueOf(123));
+      assertEquals(123, dn.getDnConf().blockReportSplitThreshold);
+
+      dn.reconfigureProperty(DFS_BLOCKREPORT_INITIAL_DELAY_KEY, "123");
+      assertEquals(123000, dn.getDnConf().initialBlockReportDelayMs);
+
+      // Revert to default and verify default.
+      dn.reconfigureProperty(DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, null);
+      for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
+        if (bpos != null) {
+          for (BPServiceActor actor : bpos.getBPServiceActors()) {
+            assertEquals(String.format("%s has wrong value",
+                DFS_BLOCKREPORT_INTERVAL_MSEC_KEY),
+                DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT,
+                actor.getScheduler().getBlockReportIntervalMs());
+          }
+        }
+      }
+      assertNull(String.format("expect %s is not configured", DFS_BLOCKREPORT_INTERVAL_MSEC_KEY),
+          dn.getConf().get(DFS_BLOCKREPORT_INTERVAL_MSEC_KEY));
+
+      dn.reconfigureProperty(DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY, null);
+      assertNull(String.format("expect %s is not configured", DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY),
+          dn.getConf().get(DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY));
+
+      dn.reconfigureProperty(DFS_BLOCKREPORT_INITIAL_DELAY_KEY, null);
+      assertNull(String.format("expect %s is not configured", DFS_BLOCKREPORT_INITIAL_DELAY_KEY),
+          dn.getConf().get(DFS_BLOCKREPORT_INITIAL_DELAY_KEY));
+    }
+  }
+
+  @Test
+  public void testDataXceiverReconfiguration()
+      throws ReconfigurationException {
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+
+      // Try invalid values.
+      try {
+        dn.reconfigureProperty(DFS_DATANODE_MAX_RECEIVER_THREADS_KEY, "text");
+        fail("ReconfigurationException expected");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting NumberFormatException",
+            expected.getCause() instanceof NumberFormatException);
+      }
+      try {
+        dn.reconfigureProperty(DFS_DATANODE_MAX_RECEIVER_THREADS_KEY, String.valueOf(-1));
+        fail("ReconfigurationException expected");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting IllegalArgumentException",
+            expected.getCause() instanceof IllegalArgumentException);
+      }
+
+      // Change properties and verify change.
+      dn.reconfigureProperty(DFS_DATANODE_MAX_RECEIVER_THREADS_KEY, String.valueOf(123));
+      assertEquals(String.format("%s has wrong value", DFS_DATANODE_MAX_RECEIVER_THREADS_KEY),
+          123, dn.getXferServer().getMaxXceiverCount());
+
+      // Revert to default.
+      dn.reconfigureProperty(DFS_DATANODE_MAX_RECEIVER_THREADS_KEY, null);
+      assertEquals(String.format("%s has wrong value", DFS_DATANODE_MAX_RECEIVER_THREADS_KEY),
+          DFS_DATANODE_MAX_RECEIVER_THREADS_DEFAULT, dn.getXferServer().getMaxXceiverCount());
+
+      assertNull(String.format("expect %s is not configured",
+          DFS_DATANODE_MAX_RECEIVER_THREADS_KEY),
+          dn.getConf().get(DFS_DATANODE_MAX_RECEIVER_THREADS_KEY));
+    }
+  }
+
+  @Test
+  public void testCacheReportReconfiguration()
+      throws ReconfigurationException {
+    int cacheReportInterval = 300 * 1000;
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+
+      // Try invalid values.
+      try {
+        dn.reconfigureProperty(DFS_CACHEREPORT_INTERVAL_MSEC_KEY, "text");
+        fail("ReconfigurationException expected");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting NumberFormatException",
+            expected.getCause() instanceof NumberFormatException);
+      }
+      try {
+        dn.reconfigureProperty(DFS_CACHEREPORT_INTERVAL_MSEC_KEY, String.valueOf(-1));
+        fail("ReconfigurationException expected");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting IllegalArgumentException",
+            expected.getCause() instanceof IllegalArgumentException);
+      }
+
+      // Change properties.
+      dn.reconfigureProperty(DFS_CACHEREPORT_INTERVAL_MSEC_KEY,
+          String.valueOf(cacheReportInterval));
+
+      // Verify change.
+      assertEquals(String.format("%s has wrong value", DFS_CACHEREPORT_INTERVAL_MSEC_KEY),
+          cacheReportInterval, dn.getDnConf().getCacheReportInterval());
+
+      // Revert to default.
+      dn.reconfigureProperty(DFS_CACHEREPORT_INTERVAL_MSEC_KEY, null);
+      assertEquals(String.format("%s has wrong value", DFS_CACHEREPORT_INTERVAL_MSEC_KEY),
+          DFS_CACHEREPORT_INTERVAL_MSEC_DEFAULT, dn.getDnConf().getCacheReportInterval());
+
+      assertNull(String.format("expect %s is not configured", DFS_CACHEREPORT_INTERVAL_MSEC_KEY),
+          dn.getConf().get(DFS_CACHEREPORT_INTERVAL_MSEC_KEY));
+    }
+  }
+
+  @Test
+  public void testSlowPeerParameters() throws Exception {
+    String[] slowPeersParameters = {
+        DFS_DATANODE_MIN_OUTLIER_DETECTION_NODES_KEY,
+        DFS_DATANODE_SLOWPEER_LOW_THRESHOLD_MS_KEY,
+        DFS_DATANODE_PEER_METRICS_MIN_OUTLIER_DETECTION_SAMPLES_KEY};
+
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+
+      // Try invalid values.
+      LambdaTestUtils.intercept(ReconfigurationException.class,
+          "Could not change property dfs.datanode.peer.stats.enabled from 'true' to 'text'",
+          () -> dn.reconfigureProperty(DFS_DATANODE_PEER_STATS_ENABLED_KEY, "text"));
+
+      for (String parameter : slowPeersParameters) {
+        try {
+          dn.reconfigureProperty(parameter, "text");
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting NumberFormatException",
+              expected.getCause() instanceof NumberFormatException);
+        }
+
+        try {
+          dn.reconfigureProperty(parameter, String.valueOf(-1));
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting IllegalArgumentException",
+              expected.getCause() instanceof IllegalArgumentException);
+        }
+      }
+
+      // Change and verify properties.
+      dn.reconfigureProperty(DFS_DATANODE_PEER_STATS_ENABLED_KEY, "false");
+      assertFalse(dn.getDnConf().peerStatsEnabled);
+
+      // Reset DFS_DATANODE_PEER_STATS_ENABLED_KEY to true.
+      dn.reconfigureProperty(DFS_DATANODE_PEER_STATS_ENABLED_KEY, "true");
+      for (String parameter : slowPeersParameters) {
+        dn.reconfigureProperty(parameter, "123");
+      }
+      assertEquals(123, dn.getPeerMetrics().getMinOutlierDetectionNodes());
+      assertEquals(123, dn.getPeerMetrics().getLowThresholdMs());
+      assertEquals(123, dn.getPeerMetrics().getMinOutlierDetectionSamples());
+      assertEquals(123,
+          dn.getPeerMetrics().getSlowNodeDetector().getMinOutlierDetectionNodes());
+      assertEquals(123,
+          dn.getPeerMetrics().getSlowNodeDetector().getLowThresholdMs());
+
+      // Revert to default and verify.
+      dn.reconfigureProperty(DFS_DATANODE_PEER_STATS_ENABLED_KEY, null);
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_PEER_STATS_ENABLED_KEY), null,
+          dn.getConf().get(DFS_DATANODE_PEER_STATS_ENABLED_KEY));
+
+      // Reset DFS_DATANODE_PEER_STATS_ENABLED_KEY to true.
+      dn.reconfigureProperty(DFS_DATANODE_PEER_STATS_ENABLED_KEY, "true");
+
+      for (String parameter : slowPeersParameters) {
+        dn.reconfigureProperty(parameter, null);
+      }
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_MIN_OUTLIER_DETECTION_NODES_KEY), null,
+          dn.getConf().get(DFS_DATANODE_MIN_OUTLIER_DETECTION_NODES_KEY));
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_SLOWPEER_LOW_THRESHOLD_MS_KEY), null,
+          dn.getConf().get(DFS_DATANODE_SLOWPEER_LOW_THRESHOLD_MS_KEY));
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_PEER_METRICS_MIN_OUTLIER_DETECTION_SAMPLES_KEY), null,
+          dn.getConf().get(DFS_DATANODE_PEER_METRICS_MIN_OUTLIER_DETECTION_SAMPLES_KEY));
+      assertEquals(dn.getPeerMetrics().getSlowNodeDetector().getMinOutlierDetectionNodes(),
+          DFS_DATANODE_MIN_OUTLIER_DETECTION_NODES_DEFAULT);
+      assertEquals(dn.getPeerMetrics().getSlowNodeDetector().getLowThresholdMs(),
+          DFS_DATANODE_SLOWPEER_LOW_THRESHOLD_MS_DEFAULT);
+    }
+  }
+
+  @Test
+  public void testSlowDiskParameters() throws ReconfigurationException, IOException {
+    String[] slowDisksParameters1 = {
+        DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY,
+        DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY};
+
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+
+      // Try invalid values.
+      try {
+        dn.reconfigureProperty(DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY, "text");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting NumberFormatException",
+            expected.getCause() instanceof NumberFormatException);
+      }
+
+      try {
+        dn.reconfigureProperty(DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY, "text");
+      } catch (ReconfigurationException expected) {
+        assertTrue("expecting NumberFormatException",
+            expected.getCause() instanceof NumberFormatException);
+      }
+
+      // Enable disk stats, make DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY > 0.
+      dn.reconfigureProperty(DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY, "1");
+      for (String parameter : slowDisksParameters1) {
+        try {
+          dn.reconfigureProperty(parameter, "text");
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting NumberFormatException",
+              expected.getCause() instanceof NumberFormatException);
+        }
+
+        try {
+          dn.reconfigureProperty(parameter, String.valueOf(-1));
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting IllegalArgumentException",
+              expected.getCause() instanceof IllegalArgumentException);
+        }
+      }
+
+      // Change and verify properties.
+      dn.reconfigureProperty(DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY, "1ms");
+      assertEquals(1, dn.getDnConf().outliersReportIntervalMs);
+
+      BlockPoolManager blockPoolManager = new BlockPoolManager(dn);
+      blockPoolManager.refreshNamenodes(dn.getConf());
+      for (BPOfferService bpos : blockPoolManager.getAllNamenodeThreads()) {
+        if (bpos != null) {
+          for (BPServiceActor actor : bpos.getBPServiceActors()) {
+            assertEquals(String.format("%s has wrong value",
+                DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY),
+                1, actor.getScheduler().getOutliersReportIntervalMs());
+          }
+        }
+      }
+
+      String[] slowDisksParameters2 = {
+          DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY,
+          DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY,
+          DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY};
+      for (String parameter : slowDisksParameters2) {
+        dn.reconfigureProperty(parameter, "99");
+      }
+      // Assert diskMetrics.
+      assertEquals(99, dn.getDiskMetrics().getMinOutlierDetectionDisks());
+      assertEquals(99, dn.getDiskMetrics().getLowThresholdMs());
+      // Assert dnConf.
+      assertTrue(dn.getDnConf().diskStatsEnabled);
+      // Assert profilingEventHook.
+      assertTrue(dn.getFileIoProvider().getProfilingEventHook().getDiskStatsEnabled());
+      assertEquals((int) ((double) 99 / 100 * Integer.MAX_VALUE),
+          dn.getFileIoProvider().getProfilingEventHook().getSampleRangeMax());
+      // Assert slowDiskDetector.
+      assertEquals(99,
+          dn.getDiskMetrics().getSlowDiskDetector().getMinOutlierDetectionNodes());
+      assertEquals(99,
+          dn.getDiskMetrics().getSlowDiskDetector().getLowThresholdMs());
+
+      // Revert to default and verify.
+      dn.reconfigureProperty(DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY, null);
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY), null,
+          dn.getConf().get(DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY));
+
+      dn.reconfigureProperty(DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY, null);
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY), null,
+          dn.getConf().get(DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY));
+      assertFalse(dn.getFileIoProvider().getProfilingEventHook().getDiskStatsEnabled());
+      assertEquals(0,
+          dn.getFileIoProvider().getProfilingEventHook().getSampleRangeMax());
+
+      // Enable disk stats, make DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY > 0.
+      dn.reconfigureProperty(DFS_DATANODE_FILEIO_PROFILING_SAMPLING_PERCENTAGE_KEY, "1");
+      dn.reconfigureProperty(DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY, null);
+      dn.reconfigureProperty(DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY, null);
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY), null,
+          dn.getConf().get(DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_KEY));
+      assertEquals(String.format("expect %s is not configured",
+          DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY), null,
+          dn.getConf().get(DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_KEY));
+      assertEquals(DFS_DATANODE_MIN_OUTLIER_DETECTION_DISKS_DEFAULT,
+          dn.getDiskMetrics().getSlowDiskDetector().getMinOutlierDetectionNodes());
+      assertEquals(DFS_DATANODE_SLOWDISK_LOW_THRESHOLD_MS_DEFAULT,
+          dn.getDiskMetrics().getSlowDiskDetector().getLowThresholdMs());
+    }
+  }
+
+  @Test
+  public void testDfsUsageParameters() throws ReconfigurationException {
+    String[] dfsUsageParameters = {
+        FS_DU_INTERVAL_KEY,
+        FS_GETSPACEUSED_JITTER_KEY};
+
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+
+      // Try invalid values.
+      for (String parameter : dfsUsageParameters) {
+        try {
+          dn.reconfigureProperty(parameter, "text");
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting NumberFormatException",
+              expected.getCause() instanceof NumberFormatException);
+        }
+
+        try {
+          dn.reconfigureProperty(parameter, String.valueOf(-1));
+          fail("ReconfigurationException expected");
+        } catch (ReconfigurationException expected) {
+          assertTrue("expecting IllegalArgumentException",
+              expected.getCause() instanceof IllegalArgumentException);
+        }
+      }
+
+      // Change and verify properties.
+      for (String parameter : dfsUsageParameters) {
+        dn.reconfigureProperty(parameter, "99");
+      }
+      List<FsVolumeImpl> volumeList = dn.data.getVolumeList();
+      for (FsVolumeImpl fsVolume : volumeList) {
+        Map<String, BlockPoolSlice> blockPoolSlices = fsVolume.getBlockPoolSlices();
+        for (Map.Entry<String, BlockPoolSlice> entry : blockPoolSlices.entrySet()) {
+          GetSpaceUsed dfsUsage = entry.getValue().getDfsUsage();
+          if (dfsUsage instanceof CachingGetSpaceUsed) {
+            assertEquals(99,
+                ((CachingGetSpaceUsed) entry.getValue().getDfsUsage()).getRefreshInterval());
+            assertEquals(99,
+                ((CachingGetSpaceUsed) entry.getValue().getDfsUsage()).getJitter());
+          }
+        }
+      }
+
+      // Revert to default and verify.
+      for (String parameter : dfsUsageParameters) {
+        dn.reconfigureProperty(parameter, null);
+      }
+      for (FsVolumeImpl fsVolume : volumeList) {
+        Map<String, BlockPoolSlice> blockPoolSlices = fsVolume.getBlockPoolSlices();
+        for (Map.Entry<String, BlockPoolSlice> entry : blockPoolSlices.entrySet()) {
+          GetSpaceUsed dfsUsage = entry.getValue().getDfsUsage();
+          if (dfsUsage instanceof CachingGetSpaceUsed) {
+            assertEquals(String.format("expect %s is not configured",
+                FS_DU_INTERVAL_KEY), FS_DU_INTERVAL_DEFAULT,
+                ((CachingGetSpaceUsed) entry.getValue().getDfsUsage()).getRefreshInterval());
+            assertEquals(String.format("expect %s is not configured",
+                FS_GETSPACEUSED_JITTER_KEY), FS_GETSPACEUSED_JITTER_DEFAULT,
+                ((CachingGetSpaceUsed) entry.getValue().getDfsUsage()).getJitter());
+          }
+          assertEquals(String.format("expect %s is not configured",
+              FS_DU_INTERVAL_KEY), null,
+              dn.getConf().get(FS_DU_INTERVAL_KEY));
+          assertEquals(String.format("expect %s is not configured",
+              FS_GETSPACEUSED_JITTER_KEY), null,
+              dn.getConf().get(FS_GETSPACEUSED_JITTER_KEY));
+        }
+      }
+    }
+  }
+
+  public static class DummyCachingGetSpaceUsed extends CachingGetSpaceUsed {
+    public DummyCachingGetSpaceUsed(Builder builder) throws IOException {
+      super(builder.setInterval(1000).setJitter(0L));
+    }
+
+    @Override
+    protected void refresh() {
+      counter++;
+    }
+  }
+
+  @Test
+  public void testDfsUsageKlass() throws ReconfigurationException, InterruptedException {
+
+    long lastCounter = counter;
+    Thread.sleep(5000);
+    assertEquals(lastCounter, counter);
+
+    for (int i = 0; i < NUM_DATA_NODE; i++) {
+      DataNode dn = cluster.getDataNodes().get(i);
+      dn.reconfigurePropertyImpl(FS_GETSPACEUSED_CLASSNAME,
+              DummyCachingGetSpaceUsed.class.getName());
+    }
+
+    lastCounter = counter;
+    Thread.sleep(5000);
+    assertTrue(counter > lastCounter);
   }
 }

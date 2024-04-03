@@ -18,11 +18,10 @@
 package org.apache.hadoop.yarn.server.resourcemanager;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Matchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -36,7 +35,8 @@ import java.net.InetSocketAddress;
 import java.security.PrivilegedAction;
 import java.security.PrivilegedExceptionAction;
 
-import com.google.protobuf.InvalidProtocolBufferException;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.thirdparty.protobuf.InvalidProtocolBufferException;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.token.delegation.TestDelegationToken;
@@ -44,8 +44,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.RMDelegati
 import org.junit.AfterClass;
 import org.junit.Assert;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
@@ -84,7 +84,8 @@ import org.junit.Test;
 
 public class TestClientRMTokens {
 
-  private static final Log LOG = LogFactory.getLog(TestClientRMTokens.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestClientRMTokens.class);
   
   // Note : Any test case in ResourceManager package that creates a proxy has
   // to be run with enabling hadoop.security.token.service.use_ip. And reset
@@ -111,7 +112,7 @@ public class TestClientRMTokens {
   }
   
   @Test
-  public void testDelegationToken() throws IOException, InterruptedException {
+  public void testDelegationToken() throws Exception {
     
     final YarnConfiguration conf = new YarnConfiguration();
     conf.set(YarnConfiguration.RM_PRINCIPAL, "testuser/localhost@apache.org");
@@ -198,14 +199,11 @@ public class TestClientRMTokens {
       }
       Thread.sleep(50l);
       LOG.info("At time: " + System.currentTimeMillis() + ", token should be invalid");
-      // Token should have expired.      
-      try {
-        clientRMWithDT.getNewApplication(request);
-        fail("Should not have succeeded with an expired token");
-      } catch (Exception e) {
-        assertEquals(InvalidToken.class.getName(), e.getClass().getName());
-        assertTrue(e.getMessage().contains("is expired"));
-      } 
+      // Token should have expired.
+      final ApplicationClientProtocol finalClientRMWithDT = clientRMWithDT;
+      final GetNewApplicationRequest finalRequest = request;
+      LambdaTestUtils.intercept(InvalidToken.class, "Token  has expired",
+          () -> finalClientRMWithDT.getNewApplication(finalRequest));
 
       // Test cancellation
       // Stop the existing proxy, start another.

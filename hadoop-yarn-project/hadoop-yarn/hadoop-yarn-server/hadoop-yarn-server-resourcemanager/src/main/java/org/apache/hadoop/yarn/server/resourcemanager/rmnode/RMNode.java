@@ -31,6 +31,7 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceUtilization;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
 import org.apache.hadoop.yarn.server.api.records.OpportunisticContainersStatus;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
@@ -93,7 +94,8 @@ public interface RMNode {
 
   /**
    * the node manager version of the node received as part of the
-   * registration with the resource manager
+   * registration with the resource manager.
+   * @return node manager version.
    */
   public String getNodeManagerVersion();
 
@@ -102,6 +104,17 @@ public interface RMNode {
    * @return the total available resource.
    */
   public Resource getTotalCapability();
+
+  /**
+   * If the total available resources has been updated.
+   * @return If the capability has been updated.
+   */
+  boolean isUpdatedCapability();
+
+  /**
+   * Mark that the updated event has been processed.
+   */
+  void resetUpdatedCapability();
 
   /**
    * the aggregated resource utilization of the containers.
@@ -195,4 +208,13 @@ public interface RMNode {
    * @return the RM context associated with this RM node.
    */
   RMContext getRMContext();
+
+  /**
+   * @return all node attributes as a Set.
+   */
+  Set<NodeAttribute> getAllNodeAttributes();
+
+  long calculateHeartBeatInterval(long defaultInterval,
+      long minInterval, long maxInterval, float speedupFactor,
+      float slowdownFactor);
 }

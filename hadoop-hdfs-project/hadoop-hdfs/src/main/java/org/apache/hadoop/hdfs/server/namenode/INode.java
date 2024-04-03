@@ -17,12 +17,10 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.Path;
@@ -42,6 +40,8 @@ import org.apache.hadoop.hdfs.util.Diff;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.ChunkedArrayList;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.PrintStream;
 import java.io.PrintWriter;
@@ -56,7 +56,7 @@ import java.util.Map;
  */
 @InterfaceAudience.Private
 public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
-  public static final Log LOG = LogFactory.getLog(INode.class);
+  public static final Logger LOG = LoggerFactory.getLogger(INode.class);
 
   /** parent is either an {@link INodeDirectory} or an {@link INodeReference}.*/
   private INode parent = null;
@@ -340,6 +340,16 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
     return false;
   }
 
+  /**
+   * Check if this inode itself has a storage policy set.
+   */
+  public boolean isSetStoragePolicy() {
+    if (isSymlink()) {
+      return false;
+    }
+    return getLocalStoragePolicyID() != HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED;
+  }
+
   /** Cast this inode to an {@link INodeFile}.  */
   public INodeFile asFile() {
     throw new IllegalStateException("Current inode is not a file: "
@@ -546,8 +556,8 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
    * 2. For a {@link WithName} node, since the node must be in a snapshot, we 
    * only count the quota usage for those nodes that still existed at the 
    * creation time of the snapshot associated with the {@link WithName} node.
-   * We do not count in the size of the diff list.  
-   * <pre>
+   * We do not count in the size of the diff list.
+   * </pre>
    *
    * @param bsps Block storage policy suite to calculate intended storage type usage
    * @param blockStoragePolicyId block storage policy id of the current INode
@@ -609,6 +619,18 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
       System.arraycopy(name, 0, path, idx, name.length);
     }
     return DFSUtil.bytes2String(path);
+  }
+
+  public boolean isDeleted() {
+    INode pInode = this;
+    while (pInode != null && !pInode.isRoot()) {
+      pInode = pInode.getParent();
+    }
+    if (pInode == null) {
+      return true;
+    } else {
+      return !pInode.isRoot();
+    }
   }
 
   public byte[][] getPathComponents() {
@@ -816,7 +838,7 @@ public abstract class INode implements INodeAttributes, Diff.Element<byte[]> {
     return path != null && path.startsWith(Path.SEPARATOR);
   }
 
-  private static void checkAbsolutePath(final String path) {
+  static void checkAbsolutePath(final String path) {
     if (!isValidAbsolutePath(path)) {
       throw new AssertionError("Absolute path required, but got '"
           + path + "'");

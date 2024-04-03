@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.*;
 import static org.hamcrest.core.Is.is;
@@ -32,14 +32,18 @@ import static org.junit.Assert.fail;
 
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.HdfsBlockLocation;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.*;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeFaultInjector;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeReference;
 import org.apache.hadoop.ipc.RemoteException;
@@ -57,6 +61,8 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.management.ManagementFactory;
 import java.lang.reflect.Field;
+import java.util.Collection;
+import java.util.EnumSet;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.TimeoutException;
@@ -69,7 +75,7 @@ import javax.management.ObjectName;
  * replica being written (RBW) & Replica being copied from another DN.
  */
 public class TestSpaceReservation {
-  static final Log LOG = LogFactory.getLog(TestSpaceReservation.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestSpaceReservation.class);
 
   private static final int DU_REFRESH_INTERVAL_MSEC = 500;
   private static final int STORAGES_PER_DATANODE = 1;
@@ -744,5 +750,49 @@ public class TestSpaceReservation {
       }
     }, 500, 30000);
     checkReservedSpace(0);
+  }
+
+  /**
+   * Ensure that bytes reserved of ReplicaInfo gets cleared
+   * during finalize.
+   *
+   * @throws IOException
+   */
+  @Test(timeout = 300000)
+  public void testReplicaInfoBytesReservedReleasedOnFinalize() throws IOException {
+    short replication = 3;
+    int bufferLength = 4096;
+    startCluster(BLOCK_SIZE, replication, -1);
+
+    String methodName = GenericTestUtils.getMethodName();
+    Path path = new Path("/" + methodName + ".01.dat");
+
+    FSDataOutputStream fos =
+        fs.create(path, FsPermission.getFileDefault(), EnumSet.of(CreateFlag.CREATE), bufferLength,
+            replication, BLOCK_SIZE, null);
+    // Allocate a block.
+    fos.write(new byte[bufferLength]);
+    fos.hsync();
+
+    DataNode dataNode = cluster.getDataNodes().get(0);
+    FsDatasetImpl fsDataSetImpl = (FsDatasetImpl) dataNode.getFSDataset();
+    long expectedReservedSpace = BLOCK_SIZE - bufferLength;
+
+    String bpid = cluster.getNamesystem().getBlockPoolId();
+    Collection<ReplicaInfo> replicas = FsDatasetTestUtil.getReplicas(fsDataSetImpl, bpid);
+    ReplicaInfo r = replicas.iterator().next();
+
+    // Verify Initial Bytes Reserved for Replica and Volume are correct
+    assertEquals(fsDataSetImpl.getVolumeList().get(0).getReservedForReplicas(),
+        expectedReservedSpace);
+    assertEquals(r.getBytesReserved(), expectedReservedSpace);
+
+    // Verify Bytes Reserved for Replica and Volume are correct after finalize
+    fsDataSetImpl.finalizeNewReplica(r, new ExtendedBlock(bpid, r));
+
+    assertEquals(fsDataSetImpl.getVolumeList().get(0).getReservedForReplicas(), 0L);
+    assertEquals(r.getBytesReserved(), 0L);
+
+    fos.close();
   }
 }

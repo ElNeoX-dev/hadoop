@@ -78,7 +78,7 @@ public interface MRConfig {
     "mapreduce.task.max.status.length";
   public static final int PROGRESS_STATUS_LEN_LIMIT_DEFAULT = 512;
 
-  public static final int MAX_BLOCK_LOCATIONS_DEFAULT = 10;
+  public static final int MAX_BLOCK_LOCATIONS_DEFAULT = 15;
   public static final String MAX_BLOCK_LOCATIONS_KEY =
     "mapreduce.job.max.split.locations";
 
@@ -131,5 +131,7 @@ public interface MRConfig {
   String MASTER_WEBAPP_UI_ACTIONS_ENABLED =
       "mapreduce.webapp.ui-actions.enabled";
   boolean DEFAULT_MASTER_WEBAPP_UI_ACTIONS_ENABLED = true;
+  String MULTIPLE_OUTPUTS_CLOSE_THREAD_COUNT = "mapreduce.multiple-outputs-close-threads";
+  int DEFAULT_MULTIPLE_OUTPUTS_CLOSE_THREAD_COUNT = 10;
 }
   

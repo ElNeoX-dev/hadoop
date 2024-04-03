@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.util;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +39,6 @@ public class ShutdownThreadsHelper {
    * @param thread {@link Thread to be shutdown}
    * @return <tt>true</tt> if the thread is successfully interrupted,
    * <tt>false</tt> otherwise
-   * @throws InterruptedException
    */
   public static boolean shutdownThread(Thread thread) {
     return shutdownThread(thread, SHUTDOWN_WAIT_MS);
@@ -51,7 +50,6 @@ public class ShutdownThreadsHelper {
    *                              interrupted
    * @return <tt>true</tt> if the thread is successfully interrupted,
    * <tt>false</tt> otherwise
-   * @throws InterruptedException
    */
   public static boolean shutdownThread(Thread thread,
                                     long timeoutInMilliSeconds) {
@@ -70,10 +68,12 @@ public class ShutdownThreadsHelper {
   }
 
   /**
+   * shutdownExecutorService.
+   *
    * @param service {@link ExecutorService to be shutdown}
    * @return <tt>true</tt> if the service is terminated,
    * <tt>false</tt> otherwise
-   * @throws InterruptedException
+   * @throws InterruptedException if the thread is interrupted.
    */
   public static boolean shutdownExecutorService(ExecutorService service)
       throws InterruptedException {
@@ -81,13 +81,15 @@ public class ShutdownThreadsHelper {
   }
 
   /**
+   * shutdownExecutorService.
+   *
    * @param service {@link ExecutorService to be shutdown}
    * @param timeoutInMs time to wait for {@link
    * ExecutorService#awaitTermination(long, java.util.concurrent.TimeUnit)}
    *                    calls in milli seconds.
    * @return <tt>true</tt> if the service is terminated,
    * <tt>false</tt> otherwise
-   * @throws InterruptedException
+   * @throws InterruptedException if the thread is interrupted.
    */
   public static boolean shutdownExecutorService(ExecutorService service,
                                         long timeoutInMs)

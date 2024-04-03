@@ -13,16 +13,16 @@
  limitations under the License. See accompanying LICENSE file.
 -->
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project</artifactId>
-    <version>3.1.1-0.2</version>
+    <version>3.3.6-1.0</version>
     <relativePath>../../hadoop-project</relativePath>
   </parent>
   <artifactId>hadoop-client-minicluster</artifactId>
-  <version>3.1.1-0.2</version>
+  <version>3.3.6-1.0</version>
   <packaging>jar</packaging>
 
   <description>Apache Hadoop Minicluster for Clients</description>
@@ -38,6 +38,12 @@
     <dependency>
       <groupId>org.apache.hadoop</groupId>
       <artifactId>hadoop-client-api</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <!-- This is the api's compile dependency, but we don't want it to be compile dependency here too. -->
+    <dependency>
+      <groupId>org.xerial.snappy</groupId>
+      <artifactId>snappy-java</artifactId>
       <scope>runtime</scope>
     </dependency>
     <dependency>
@@ -143,7 +149,7 @@
           <artifactId>hadoop-yarn-common</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>org.fusesource.leveldbjni</groupId>
+          <groupId>${leveldbjni.group}</groupId>
           <artifactId>leveldbjni-all</artifactId>
         </exclusion>
         <exclusion>
@@ -167,8 +173,12 @@
           <artifactId>commons-io</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>commons-lang</groupId>
-          <artifactId>commons-lang</artifactId>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-lang3</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-text</artifactId>
         </exclusion>
         <exclusion>
           <groupId>commons-logging</groupId>
@@ -183,8 +193,12 @@
           <artifactId>slf4j-log4j12</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>log4j</groupId>
-          <artifactId>log4j</artifactId>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-reload4j</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>ch.qos.reload4j</groupId>
+          <artifactId>reload4j</artifactId>
         </exclusion>
         <exclusion>
           <groupId>com.fasterxml.jackson.core</groupId>
@@ -315,8 +329,12 @@
           <artifactId>commons-net</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>com.github.spotbugs</groupId>
-          <artifactId>spotbugs-annotations</artifactId>
+          <groupId>dnsjava</groupId>
+          <artifactId>dnsjava</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop.thirdparty</groupId>
+          <artifactId>hadoop-shaded-guava</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -381,7 +399,7 @@
     <!-- Add back in Mockito since the hadoop-hdfs test jar needs it. -->
     <dependency>
       <groupId>org.mockito</groupId>
-      <artifactId>mockito-all</artifactId>
+      <artifactId>mockito-core</artifactId>
       <optional>true</optional>
     </dependency>
     <!-- Add back in the transitive dependencies excluded from hadoop-common in client TODO remove once we have a filter for "is in these artifacts" -->
@@ -405,29 +423,25 @@
       <optional>true</optional>
     </dependency>
     <dependency>
-      <groupId>com.sun.jersey</groupId>
+      <groupId>com.github.pjfanning</groupId>
       <artifactId>jersey-json</artifactId>
       <optional>true</optional>
       <exclusions>
         <exclusion>
+          <groupId>com.fasterxml.jackson.core</groupId>
+          <artifactId>jackson-core</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.fasterxml.jackson.core</groupId>
+          <artifactId>jackson-databind</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.fasterxml.jackson.jaxrs</groupId>
+          <artifactId>jackson-jaxrs-json-provider</artifactId>
+        </exclusion>
+        <exclusion>
           <groupId>javax.xml.bind</groupId>
           <artifactId>jaxb-api</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.codehaus.jackson</groupId>
-          <artifactId>jackson-core-asl</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.codehaus.jackson</groupId>
-          <artifactId>jackson-mapper-asl</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.codehaus.jackson</groupId>
-          <artifactId>jackson-jaxrs</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>org.codehaus.jackson</groupId>
-          <artifactId>jackson-xc</artifactId>
         </exclusion>
       </exclusions>
     </dependency>
@@ -437,9 +451,23 @@
       <optional>true</optional>
     </dependency>
     <dependency>
-          <groupId>com.sun.jersey</groupId>
-          <artifactId>jersey-servlet</artifactId>
+      <groupId>com.sun.jersey</groupId>
+      <artifactId>jersey-servlet</artifactId>
       <optional>true</optional>
+      <exclusions>
+        <exclusion>
+          <groupId>javax.servlet</groupId>
+          <artifactId>servlet-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>javax.enterprise</groupId>
+          <artifactId>cdi-api</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>ch.qos.cal10n</groupId>
+          <artifactId>cal10n-api</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <!-- skip org.apache.avro:avro-ipc because it doesn't look like hadoop-common actually uses it -->
     <dependency>
@@ -473,19 +501,23 @@
         </exclusion>
         <exclusion>
           <groupId>org.apache.hadoop</groupId>
-          <artifactId>hadoop-yarn-registry</artifactId>
+          <artifactId>hadoop-registry</artifactId>
         </exclusion>
         <exclusion>
           <groupId>org.apache.hadoop</groupId>
           <artifactId>hadoop-yarn-server-common</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>org.fusesource.leveldbjni</groupId>
+          <groupId>${leveldbjni.group}</groupId>
           <artifactId>leveldbjni-all</artifactId>
         </exclusion>
         <exclusion>
           <groupId>org.eclipse.jetty</groupId>
           <artifactId>jetty-util</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop.thirdparty</groupId>
+          <artifactId>hadoop-shaded-guava</artifactId>
         </exclusion>
         <exclusion>
           <groupId>com.google.guava</groupId>
@@ -500,8 +532,8 @@
           <artifactId>commons-codec</artifactId>
         </exclusion>
         <exclusion>
-          <groupId>commons-lang</groupId>
-          <artifactId>commons-lang</artifactId>
+          <groupId>org.apache.commons</groupId>
+          <artifactId>commons-lang3</artifactId>
         </exclusion>
         <exclusion>
           <groupId>commons-logging</groupId>
@@ -541,6 +573,10 @@
         <exclusion>
           <groupId>com.google.guava</groupId>
           <artifactId>guava</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>org.apache.hadoop.thirdparty</groupId>
+          <artifactId>hadoop-shaded-guava</artifactId>
         </exclusion>
         <exclusion>
           <groupId>commons-logging</groupId>
@@ -656,13 +692,18 @@
                       <exclude>org.apache.hadoop:hadoop-client-api</exclude>
                       <exclude>org.apache.hadoop:hadoop-client-runtime</exclude>
                       <!-- Fine to expose our purposefully not-shaded deps as dependencies -->
-                      <exclude>org.apache.htrace:htrace-core4</exclude>
                       <exclude>org.slf4j:slf4j-api</exclude>
                       <exclude>commons-logging:commons-logging</exclude>
                       <exclude>junit:junit</exclude>
                       <exclude>com.google.code.findbugs:jsr305</exclude>
-                      <exclude>log4j:log4j</exclude>
+                      <exclude>ch.qos.reload4j:reload4j</exclude>
+                      <exclude>org.eclipse.jetty.websocket:websocket-common</exclude>
+                      <exclude>org.eclipse.jetty.websocket:websocket-api</exclude>
                       <!-- We need a filter that matches just those things that are included in the above artiacts -->
+                      <!-- Leave bouncycastle unshaded because it's signed with a special Oracle certificate so it can be a custom JCE security provider -->
+                      <exclude>org.bouncycastle:*</exclude>
+                      <!-- Leave snappy that includes native methods which cannot be relocated. -->
+                      <exclude>org.xerial.snappy:*</exclude>
                     </excludes>
                   </artifactSet>
                   <filters>
@@ -709,9 +750,22 @@
                         <exclude>testdata/*</exclude>
                       </excludes>
                     </filter>
+                    <filter>
+                      <artifact>com.fasterxml.jackson.*:*</artifact>
+                      <excludes>
+                        <exclude>META-INF/versions/9/module-info.class</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>com.google.code.gson:gson</artifact>
+                      <excludes>
+                        <exclude>META-INF/versions/9/module-info.class</exclude>
+                      </excludes>
+                    </filter>
+
                     <!-- Mockito tries to include its own unrelocated copy of hamcrest. :( -->
                     <filter>
-                      <artifact>org.mockito:mockito-all</artifact>
+                      <artifact>org.mockito:mockito-core</artifact>
                       <excludes>
                         <exclude>asm-license.txt</exclude>
                         <exclude>cglib-license.txt</exclude>
@@ -719,6 +773,8 @@
                         <exclude>objenesis-license.txt</exclude>
                         <exclude>org/hamcrest/**/*.class</exclude>
                         <exclude>org/hamcrest/*.class</exclude>
+                        <exclude>org/objenesis/**/*.class</exclude>
+                        <exclude>org/objenesis/*.class</exclude>
                       </excludes>
                     </filter>
                     <!-- skip grizzly internals we don't need to run. -->
@@ -746,6 +802,13 @@
                       </excludes>
                     </filter>
                     <filter>
+                      <!-- skip jetty license info already incorporated into LICENSE/NOTICE -->
+                      <artifact>org.eclipse.jetty.websocket:*</artifact>
+                      <excludes>
+                        <exclude>about.html</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
                       <artifact>org.apache.hadoop:*</artifact>
                       <excludes>
                         <!-- No shipping log4j configs in a downstream facing library -->
@@ -766,19 +829,55 @@
                         <exclude>ehcache-core.xsd</exclude>
                       </excludes>
                     </filter>
-
-                   <!-- remove utility classes which are not required from
-                        dnsjava -->
                     <filter>
-                      <artifact>dnsjava:dnsjava</artifact>
+                      <artifact>org.eclipse.jetty.websocket:javax-websocket-server-impl</artifact>
                       <excludes>
-                        <excldue>dig*</excldue>
-                        <exclude>jnamed*</exclude>
-                        <exlcude>lookup*</exlcude>
-                        <exclude>update*</exclude>
+                        <exclude>*/**</exclude>
                       </excludes>
                     </filter>
-
+                    <filter>
+                      <artifact>org.eclipse.jetty.websocket:websocket-client</artifact>
+                      <excludes>
+                        <exclude>*/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.eclipse.jetty:jetty-io</artifact>
+                      <excludes>
+                        <exclude>*/**</exclude>
+                      </excludes>
+                    </filter>
+                    <!-- Jetty 9.4.x: jetty-client and jetty-xml are depended by org.eclipse.jetty.websocket:websocket-client.-->
+                    <filter>
+                      <artifact>org.eclipse.jetty:jetty-client</artifact>
+                      <excludes>
+                        <exclude>*/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.eclipse.jetty:jetty-xml</artifact>
+                      <excludes>
+                        <exclude>*/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.eclipse.jetty:jetty-http</artifact>
+                      <excludes>
+                        <exclude>*/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.eclipse.jetty:jetty-util-ajax</artifact>
+                      <excludes>
+                        <exclude>*/**</exclude>
+                      </excludes>
+                    </filter>
+                    <filter>
+                      <artifact>org.eclipse.jetty:jetty-server</artifact>
+                      <excludes>
+                        <exclude>jetty-dir.css</exclude>
+                      </excludes>
+                    </filter>
                   </filters>
 
                   <!-- relocate classes from mssql-jdbc -->
@@ -797,9 +896,7 @@
                       <excludes>
                         <exclude>org/apache/hadoop/*</exclude>
                         <exclude>org/apache/hadoop/**/*</exclude>
-                        <!-- Our non-shaded htrace and logging libraries -->
-                        <exclude>org/apache/htrace/*</exclude>
-                        <exclude>org/apache/htrace/**/*</exclude>
+                        <!-- Our non-shaded logging libraries -->
                         <exclude>org/slf4j/*</exclude>
                         <exclude>org/slf4j/**/*</exclude>
                         <exclude>org/apache/commons/logging/*</exclude>
@@ -818,6 +915,11 @@
                         <exclude>org/w3c/dom/**/*</exclude>
                         <exclude>org/xml/sax/*</exclude>
                         <exclude>org/xml/sax/**/*</exclude>
+                        <exclude>org/bouncycastle/*</exclude>
+                        <exclude>org/bouncycastle/**/*</exclude>
+                        <!-- Exclude snappy-java -->
+                        <exclude>org/xerial/snappy/*</exclude>
+                        <exclude>org/xerial/snappy/**/*</exclude>
                       </excludes>
                     </relocation>
                     <relocation>
@@ -843,6 +945,8 @@
                         <exclude>com/sun/security/**/*</exclude>
                         <exclude>com/sun/jndi/**/*</exclude>
                         <exclude>com/sun/management/**/*</exclude>
+                        <exclude>com/ibm/security/*</exclude>
+                        <exclude>com/ibm/security/**/*</exclude>
                       </excludes>
                     </relocation>
                     <relocation>
@@ -908,6 +1012,20 @@
                       </excludes>
                     </relocation>
                     <relocation>
+                      <pattern>javax/websocket/</pattern>
+                      <shadedPattern>${shaded.dependency.prefix}.javax.websocket.</shadedPattern>
+                      <excludes>
+                        <exclude>**/pom.xml</exclude>
+                      </excludes>
+                    </relocation>
+                    <relocation>
+                      <pattern>javax/annotation/</pattern>
+                      <shadedPattern>${shaded.dependency.prefix}.javax.websocket.</shadedPattern>
+                      <excludes>
+                        <exclude>**/pom.xml</exclude>
+                      </excludes>
+                    </relocation>
+                    <relocation>
                       <pattern>jersey/</pattern>
                       <shadedPattern>${shaded.dependency.prefix}.jersey.</shadedPattern>
                       <excludes>
@@ -922,6 +1040,9 @@
                         <!-- Exclude config keys for Hadoop that look like package names -->
                         <exclude>net/topology/*</exclude>
                         <exclude>net/topology/**/*</exclude>
+                        <!-- Exclude lz4-java -->
+                        <exclude>net/jpountz/*</exclude>
+                        <exclude>net/jpountz/**/*</exclude>
                       </excludes>
                     </relocation>
                     <!-- okio declares a top level package instead of nested -->

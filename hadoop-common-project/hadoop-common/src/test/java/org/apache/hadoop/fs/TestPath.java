@@ -34,7 +34,7 @@ import org.apache.hadoop.io.AvroTestUtil;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Shell;
 
-import com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
 import static org.apache.hadoop.test.PlatformAssumptions.assumeWindows;
@@ -121,7 +121,9 @@ public class TestPath {
     assertEquals("/foo", new Path("/foo/").toString());
     assertEquals("foo", new Path("foo/").toString());
     assertEquals("foo", new Path("foo//").toString());
+    assertEquals("foo", new Path("foo///").toString());
     assertEquals("foo/bar", new Path("foo//bar").toString());
+    assertEquals("foo/bar", new Path("foo///bar").toString());
     assertEquals("hdfs://foo/foo2/bar/baz/",
         new Path(new URI("hdfs://foo//foo2///bar/baz///")).toString());
     if (Path.WINDOWS) {
@@ -525,5 +527,12 @@ public class TestPath {
       Assert.assertEquals(source, deser);
     }
 
+  }
+
+  @Test(timeout = 30000)
+  public void testSuffixFromRoot() {
+    Path root = new Path("/");
+    Assert.assertNull(root.getParent());
+    Assert.assertEquals(new Path("/bar"), root.suffix("bar"));
   }
 }

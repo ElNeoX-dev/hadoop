@@ -27,7 +27,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -246,6 +246,51 @@ public class TestClientProtocolForPipelineRecovery {
   }
 
   /**
+   * Test to ensure heartbeats continue during a flush in case of
+   * delayed acks.
+   */
+  @Test
+  public void testHeartbeatDuringFlush() throws Exception {
+    // Delay sending acks
+    DataNodeFaultInjector dnFaultInjector = new DataNodeFaultInjector() {
+      @Override
+      public void delaySendingAckToUpstream(final String upstreamAddr)
+          throws IOException {
+        try {
+          Thread.sleep(3500); // delay longer than socket timeout
+        } catch (InterruptedException ie) {
+          throw new IOException("Interrupted while sleeping");
+        }
+      }
+    };
+    DataNodeFaultInjector oldDnInjector = DataNodeFaultInjector.get();
+
+    // Setting the timeout to be 3 seconds. Heartbeat packet
+    // should be sent every 1.5 seconds if there is no data traffic.
+    Configuration conf = new HdfsConfiguration();
+    conf.set(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, "3000");
+    MiniDFSCluster cluster = null;
+
+    try {
+      int numDataNodes = 1;
+      cluster = new MiniDFSCluster.Builder(conf)
+          .numDataNodes(numDataNodes).build();
+      cluster.waitActive();
+      FileSystem fs = cluster.getFileSystem();
+      FSDataOutputStream out = fs.create(new Path("delayedack.dat"), (short)2);
+      out.write(0x31);
+      out.hflush();
+      DataNodeFaultInjector.set(dnFaultInjector); // cause ack delay
+      out.close();
+    } finally {
+      DataNodeFaultInjector.set(oldDnInjector);
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  /**
    * Test recovery on restart OOB message. It also tests the delivery of 
    * OOB ack originating from the primary datanode. Since there is only
    * one node in the cluster, failure of restart-recovery will fail the
@@ -399,7 +444,7 @@ public class TestClientProtocolForPipelineRecovery {
    *  rolling upgrades. The client should be able to retry pipeline recovery
    *  more times than the default.
    *  (in a row for the same packet, including the heartbeat packet)
-   *  (See{@link DataStreamer#pipelineRecoveryCount})
+   *  (See{@link DataStreamer#getPipelineRecoveryCount})
    */
   @Test(timeout = 60000)
   public void testPipelineRecoveryOnDatanodeUpgrade() throws Exception {
@@ -435,6 +480,8 @@ public class TestClientProtocolForPipelineRecovery {
       Assert.assertEquals("The pipeline recovery count shouldn't increase",
           0, out.getStreamer().getPipelineRecoveryCount());
       out.write(1);
+      out.close();
+      // Ensure that subsequent closes are idempotent and do not throw errors
       out.close();
     } finally {
       if (cluster != null) {

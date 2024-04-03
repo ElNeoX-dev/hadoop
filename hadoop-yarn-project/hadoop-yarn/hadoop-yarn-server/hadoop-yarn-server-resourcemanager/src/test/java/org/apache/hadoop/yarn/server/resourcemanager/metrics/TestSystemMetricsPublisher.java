@@ -18,9 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.metrics;
 
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -28,6 +26,14 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+
+import org.junit.After;
+import org.junit.Assert;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 
 import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -64,19 +70,34 @@ import org.apache.hadoop.yarn.server.timeline.TimelineReader.Field;
 import org.apache.hadoop.yarn.server.timeline.TimelineStore;
 import org.apache.hadoop.yarn.server.timeline.recovery.MemoryTimelineStateStore;
 import org.apache.hadoop.yarn.server.timeline.recovery.TimelineStateStore;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+@RunWith(Parameterized.class)
 public class TestSystemMetricsPublisher {
+
+  @Parameters
+  public static Collection<Object[]> data() {
+    return Arrays.asList(new Object[][] {{false, 0}, {true, 1}});
+  }
 
   private static ApplicationHistoryServer timelineServer;
   private static TimelineServiceV1Publisher metricsPublisher;
   private static TimelineStore store;
 
-  @BeforeClass
-  public static void setup() throws Exception {
+  private boolean rmTimelineServerV1PublisherBatchEnabled;
+  private int rmTimelineServerV1PublisherInterval;
+
+  public TestSystemMetricsPublisher(boolean rmTimelineServerV1PublisherBatchEnabled,
+      int rmTimelineServerV1PublisherInterval) {
+    this.rmTimelineServerV1PublisherBatchEnabled = rmTimelineServerV1PublisherBatchEnabled;
+    this.rmTimelineServerV1PublisherInterval = rmTimelineServerV1PublisherInterval;
+  }
+
+  @Before
+  public void setup() throws Exception {
     YarnConfiguration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setBoolean(YarnConfiguration.SYSTEM_METRICS_PUBLISHER_ENABLED, true);
@@ -87,6 +108,10 @@ public class TestSystemMetricsPublisher {
     conf.setInt(
         YarnConfiguration.RM_SYSTEM_METRICS_PUBLISHER_DISPATCHER_POOL_SIZE,
         2);
+    conf.setBoolean(YarnConfiguration.RM_TIMELINE_SERVER_V1_PUBLISHER_BATCH_ENABLED,
+        rmTimelineServerV1PublisherBatchEnabled);
+    conf.setInt(YarnConfiguration.RM_TIMELINE_SERVER_V1_PUBLISHER_INTERVAL,
+        rmTimelineServerV1PublisherInterval);
 
     timelineServer = new ApplicationHistoryServer();
     timelineServer.init(conf);
@@ -98,8 +123,8 @@ public class TestSystemMetricsPublisher {
     metricsPublisher.start();
   }
 
-  @AfterClass
-  public static void tearDown() throws Exception {
+  @After
+  public void tearDown() throws Exception {
     if (metricsPublisher != null) {
       metricsPublisher.stop();
     }
@@ -115,6 +140,7 @@ public class TestSystemMetricsPublisher {
       ApplicationId appId = ApplicationId.newInstance(0, i);
       RMApp app = createRMApp(appId);
       metricsPublisher.appCreated(app, app.getStartTime());
+      metricsPublisher.appLaunched(app, app.getLaunchTime());
       if (i == 1) {
         when(app.getQueue()).thenReturn("new test queue");
         ApplicationSubmissionContext asc = mock(
@@ -150,7 +176,7 @@ public class TestSystemMetricsPublisher {
                 ApplicationMetricsConstants.ENTITY_TYPE,
                 EnumSet.allOf(Field.class));
         // ensure Five events are both published before leaving the loop
-      } while (entity == null || entity.getEvents().size() < 5);
+      } while (entity == null || entity.getEvents().size() < 6);
       // verify all the fields
       Assert.assertEquals(ApplicationMetricsConstants.ENTITY_TYPE,
           entity.getEntityType());
@@ -240,6 +266,7 @@ public class TestSystemMetricsPublisher {
       Assert.assertEquals("context", entity.getOtherInfo()
           .get(ApplicationMetricsConstants.YARN_APP_CALLER_CONTEXT));
       boolean hasCreatedEvent = false;
+      boolean hasLaunchedEvent = false;
       boolean hasUpdatedEvent = false;
       boolean hasFinishedEvent = false;
       boolean hasACLsUpdatedEvent = false;
@@ -249,6 +276,10 @@ public class TestSystemMetricsPublisher {
             ApplicationMetricsConstants.CREATED_EVENT_TYPE)) {
           hasCreatedEvent = true;
           Assert.assertEquals(app.getStartTime(), event.getTimestamp());
+        } else if (event.getEventType().equals(
+            ApplicationMetricsConstants.LAUNCHED_EVENT_TYPE)) {
+          hasLaunchedEvent = true;
+          Assert.assertEquals(app.getLaunchTime(), event.getTimestamp());
         } else if (event.getEventType().equals(
             ApplicationMetricsConstants.FINISHED_EVENT_TYPE)) {
           hasFinishedEvent = true;
@@ -284,7 +315,7 @@ public class TestSystemMetricsPublisher {
         } else if (event.getEventType().equals(
               ApplicationMetricsConstants.STATE_UPDATED_EVENT_TYPE)) {
           hasStateUpdateEvent = true;
-          Assert.assertEquals(event.getTimestamp(), stateUpdateTimeStamp);
+          assertThat(event.getTimestamp()).isEqualTo(stateUpdateTimeStamp);
           Assert.assertEquals(YarnApplicationState.RUNNING.toString(), event
               .getEventInfo().get(
                    ApplicationMetricsConstants.STATE_EVENT_INFO));
@@ -292,6 +323,7 @@ public class TestSystemMetricsPublisher {
       }
       // Do assertTrue verification separately for easier debug
       Assert.assertTrue(hasCreatedEvent);
+      Assert.assertTrue(hasLaunchedEvent);
       Assert.assertTrue(hasFinishedEvent);
       Assert.assertTrue(hasACLsUpdatedEvent);
       Assert.assertTrue(hasUpdatedEvent);
@@ -499,6 +531,7 @@ public class TestSystemMetricsPublisher {
     when(app.getQueue()).thenReturn("test queue");
     when(app.getSubmitTime()).thenReturn(Integer.MAX_VALUE + 1L);
     when(app.getStartTime()).thenReturn(Integer.MAX_VALUE + 2L);
+    when(app.getLaunchTime()).thenReturn(Integer.MAX_VALUE + 2L);
     when(app.getFinishTime()).thenReturn(Integer.MAX_VALUE + 3L);
     when(app.getDiagnostics()).thenReturn(
         new StringBuilder("test diagnostics info"));
@@ -517,7 +550,8 @@ public class TestSystemMetricsPublisher {
         .put(ResourceInformation.MEMORY_MB.getName(), (long) Integer.MAX_VALUE);
     preemptedMap.put(ResourceInformation.VCORES.getName(), Long.MAX_VALUE);
     when(app.getRMAppMetrics())
-        .thenReturn(new RMAppMetrics(null, 0, 0, resourceMap, preemptedMap));
+        .thenReturn(new RMAppMetrics(null, 0, 0, resourceMap, preemptedMap,
+            0));
     Set<String> appTags = new HashSet<String>();
     appTags.add("test");
     appTags.add("tags");

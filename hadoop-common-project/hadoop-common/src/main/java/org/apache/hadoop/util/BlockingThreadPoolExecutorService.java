@@ -28,8 +28,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.util.concurrent.MoreExecutors;
-
 import org.apache.hadoop.classification.InterfaceAudience;
 
 /**
@@ -105,8 +103,7 @@ public final class BlockingThreadPoolExecutorService
 
   private BlockingThreadPoolExecutorService(int permitCount,
       ThreadPoolExecutor eventProcessingExecutor) {
-    super(MoreExecutors.listeningDecorator(eventProcessingExecutor),
-        permitCount, false);
+    super(eventProcessingExecutor, permitCount, false);
     this.eventProcessingExecutor = eventProcessingExecutor;
   }
 
@@ -120,6 +117,7 @@ public final class BlockingThreadPoolExecutorService
    * @param keepAliveTime time until threads are cleaned up in {@code unit}
    * @param unit time unit
    * @param prefixName prefix of name for threads
+   * @return BlockingThreadPoolExecutorService.
    */
   public static BlockingThreadPoolExecutorService newInstance(
       int activeTasks,
@@ -161,9 +159,9 @@ public final class BlockingThreadPoolExecutorService
   public String toString() {
     final StringBuilder sb = new StringBuilder(
         "BlockingThreadPoolExecutorService{");
-    sb.append(super.toString());
-    sb.append(", activeCount=").append(getActiveCount());
-    sb.append('}');
+    sb.append(super.toString())
+        .append(", activeCount=").append(getActiveCount())
+        .append('}');
     return sb.toString();
   }
 }

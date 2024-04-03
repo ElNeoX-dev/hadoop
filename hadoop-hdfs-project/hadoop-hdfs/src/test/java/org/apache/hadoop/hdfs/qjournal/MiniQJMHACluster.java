@@ -17,14 +17,15 @@
  */
 package org.apache.hadoop.hdfs.qjournal;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.server.namenode.ha.ConfiguredFailoverProxyProvider;
 import org.apache.hadoop.hdfs.server.namenode.ha.HATestUtil;
 
 import java.io.IOException;
@@ -34,11 +35,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-public class MiniQJMHACluster {
+public class MiniQJMHACluster implements AutoCloseable {
   private MiniDFSCluster cluster;
   private MiniJournalCluster journalCluster;
   private final Configuration conf;
-  private static final Log LOG = LogFactory.getLog(MiniQJMHACluster.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MiniQJMHACluster.class);
 
   public static final String NAMESERVICE = "ns1";
   private static final Random RANDOM = new Random();
@@ -170,7 +172,8 @@ public class MiniQJMHACluster {
     }
 
     // use standard failover configurations
-    HATestUtil.setFailoverConfigurations(conf, NAMESERVICE, nns);
+    HATestUtil.setFailoverConfigurations(conf, NAMESERVICE, nns,
+        ConfiguredFailoverProxyProvider.class);
     return conf;
   }
 
@@ -186,4 +189,15 @@ public class MiniQJMHACluster {
     cluster.shutdown();
     journalCluster.shutdown();
   }
+
+  @Override
+  public void close() {
+    try {
+      shutdown();
+    } catch (IOException shutdownFailure) {
+      LOG.warn("Exception while closing journal cluster", shutdownFailure);
+    }
+
+  }
+
 }

@@ -46,7 +46,7 @@ public class SaslPropertiesResolver implements Configurable{
    * Looks up the configuration to see if there is custom class specified.
    * Constructs the instance by passing the configuration directly to the
    * constructor to achieve thread safety using final fields.
-   * @param conf
+   * @param conf configuration.
    * @return SaslPropertiesResolver
    */
   public static SaslPropertiesResolver getInstance(Configuration conf) {
@@ -102,7 +102,7 @@ public class SaslPropertiesResolver implements Configurable{
    */
   public Map<String, String> getServerProperties(InetAddress clientAddress,
       int ingressPort){
-    return properties;
+    return getServerProperties(clientAddress);
   }
 
   /**
@@ -122,7 +122,7 @@ public class SaslPropertiesResolver implements Configurable{
    */
   public Map<String, String> getClientProperties(InetAddress serverAddress,
       int ingressPort) {
-    return properties;
+    return getClientProperties(serverAddress);
   }
 
   /**

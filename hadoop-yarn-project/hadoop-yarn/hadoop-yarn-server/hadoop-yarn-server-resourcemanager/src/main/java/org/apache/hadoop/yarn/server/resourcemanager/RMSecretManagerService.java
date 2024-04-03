@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -43,7 +43,8 @@ public class RMSecretManagerService extends AbstractService {
 
   /**
    * Construct the service.
-   *
+   * @param conf Configuration.
+   * @param rmContext RMContext.
    */
   public RMSecretManagerService(Configuration conf, RMContextImpl rmContext) {
     super(RMSecretManagerService.class.getName());

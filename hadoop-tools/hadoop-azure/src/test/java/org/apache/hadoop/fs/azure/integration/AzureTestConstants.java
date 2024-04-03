@@ -20,6 +20,8 @@ package org.apache.hadoop.fs.azure.integration;
 
 import org.apache.hadoop.fs.Path;
 
+import static org.apache.hadoop.fs.azurebfs.constants.FileSystemConfigurations.DEFAULT_WRITE_BUFFER_SIZE;
+
 /**
  * Constants for the Azure tests.
  */
@@ -143,12 +145,10 @@ public interface AzureTestConstants {
 
 
 
-  String ACCOUNT_KEY_PROPERTY_NAME
-      = "fs.azure.account.key.";
+  String ACCOUNT_KEY_PROPERTY_NAME = "fs.azure.account.key.";
+  String ACCOUNT_NAME_PROPERTY_NAME = "fs.azure.account.name";
   String SAS_PROPERTY_NAME = "fs.azure.sas.";
   String TEST_CONFIGURATION_FILE_NAME = "azure-test.xml";
-  String TEST_ACCOUNT_NAME_PROPERTY_NAME
-      = "fs.azure.test.account.name";
   String MOCK_ACCOUNT_NAME
       = "mockAccount.blob.core.windows.net";
   String MOCK_CONTAINER_NAME = "mockContainer";
@@ -177,4 +177,15 @@ public interface AzureTestConstants {
    * Base directory for page blobs.
    */
   Path PAGE_BLOB_DIR = new Path("/" + DEFAULT_PAGE_BLOB_DIRECTORY);
+
+  /**
+   * Huge file for testing AbfsOutputStream uploads: {@value}
+   */
+  String AZURE_SCALE_HUGE_FILE_UPLOAD = AZURE_SCALE_TEST + "huge.upload";
+
+  /**
+   * Default value for Huge file to be tested for AbfsOutputStream uploads:
+   * {@value}
+   */
+  int AZURE_SCALE_HUGE_FILE_UPLOAD_DEFAULT = 2 * DEFAULT_WRITE_BUFFER_SIZE;
 }

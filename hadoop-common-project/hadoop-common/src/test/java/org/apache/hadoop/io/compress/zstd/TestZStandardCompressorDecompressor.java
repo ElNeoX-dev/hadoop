@@ -234,6 +234,65 @@ public class TestZStandardCompressorDecompressor {
     }
   }
 
+  /**
+   * Verify decompressor logic with some finish operation in compress.
+   */
+  @Test
+  public void testCompressorDecompressorWithFinish() throws Exception {
+    DataOutputStream deflateOut = null;
+    DataInputStream inflateIn = null;
+    int byteSize = 1024 * 100;
+    byte[] bytes = generate(byteSize);
+    int firstLength = 1024 * 30;
+
+    int bufferSize = IO_FILE_BUFFER_SIZE_DEFAULT;
+    try {
+      DataOutputBuffer compressedDataBuffer = new DataOutputBuffer();
+      CompressionOutputStream deflateFilter =
+              new CompressorStream(compressedDataBuffer, new ZStandardCompressor(),
+                      bufferSize);
+
+      deflateOut =
+              new DataOutputStream(new BufferedOutputStream(deflateFilter));
+
+      // Write some data and finish.
+      deflateOut.write(bytes, 0, firstLength);
+      deflateFilter.finish();
+      deflateOut.flush();
+
+      // ResetState then write some data and finish.
+      deflateFilter.resetState();
+      deflateOut.write(bytes, firstLength, firstLength);
+      deflateFilter.finish();
+      deflateOut.flush();
+
+      // ResetState then write some data and finish.
+      deflateFilter.resetState();
+      deflateOut.write(bytes, firstLength * 2, byteSize - firstLength * 2);
+      deflateFilter.finish();
+      deflateOut.flush();
+
+      DataInputBuffer deCompressedDataBuffer = new DataInputBuffer();
+      deCompressedDataBuffer.reset(compressedDataBuffer.getData(), 0,
+              compressedDataBuffer.getLength());
+
+      CompressionInputStream inflateFilter =
+              new DecompressorStream(deCompressedDataBuffer,
+                      new ZStandardDecompressor(bufferSize), bufferSize);
+
+      inflateIn = new DataInputStream(new BufferedInputStream(inflateFilter));
+
+      byte[] result = new byte[byteSize];
+      inflateIn.read(result);
+      assertArrayEquals(
+              "original array not equals compress/decompressed array", bytes,
+              result);
+    } finally {
+      IOUtils.closeQuietly(deflateOut);
+      IOUtils.closeQuietly(inflateIn);
+    }
+  }
+
   @Test
   public void testZStandardCompressDecompressInMultiThreads() throws Exception {
     MultithreadedTestUtil.TestContext ctx =
@@ -414,13 +473,11 @@ public class TestZStandardCompressorDecompressor {
     outBuf.clear();
     while (!decompressor.finished()) {
       decompressor.decompress(inBuf, outBuf);
-      if (outBuf.remaining() == 0) {
-        outBuf.flip();
-        while (outBuf.remaining() > 0) {
-          assertEquals(expected.get(), outBuf.get());
-        }
-        outBuf.clear();
+      outBuf.flip();
+      while (outBuf.remaining() > 0) {
+        assertEquals(expected.get(), outBuf.get());
       }
+      outBuf.clear();
     }
     outBuf.flip();
     while (outBuf.remaining() > 0) {

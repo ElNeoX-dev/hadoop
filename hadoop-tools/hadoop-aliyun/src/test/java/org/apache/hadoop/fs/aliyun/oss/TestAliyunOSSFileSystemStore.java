@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.fs.aliyun.oss;
 
+import com.aliyun.oss.model.ObjectMetadata;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.junit.After;
@@ -78,8 +79,6 @@ public class TestAliyunOSSFileSystemStore {
 
   protected void writeRenameReadCompare(Path path, long len)
       throws IOException, NoSuchAlgorithmException {
-    // If len > fs.oss.multipart.upload.threshold,
-    // we'll use a multipart upload copy
     MessageDigest digest = MessageDigest.getInstance("MD5");
     OutputStream out = new BufferedOutputStream(
         new DigestOutputStream(fs.create(path, false), digest));
@@ -91,11 +90,17 @@ public class TestAliyunOSSFileSystemStore {
 
     assertTrue("Exists", fs.exists(path));
 
+    ObjectMetadata srcMeta = fs.getStore().getObjectMetadata(
+        path.toUri().getPath().substring(1));
+
     Path copyPath = path.suffix(".copy");
     fs.rename(path, copyPath);
 
     assertTrue("Copy exists", fs.exists(copyPath));
-
+    // file type should not change
+    ObjectMetadata dstMeta = fs.getStore().getObjectMetadata(
+        copyPath.toUri().getPath().substring(1));
+    assertEquals(srcMeta.getObjectType(), dstMeta.getObjectType());
     // Download file from Aliyun OSS and compare the digest against the original
     MessageDigest digest2 = MessageDigest.getInstance("MD5");
     InputStream in = new BufferedInputStream(
@@ -119,7 +124,8 @@ public class TestAliyunOSSFileSystemStore {
   @Test
   public void testLargeUpload()
       throws IOException, NoSuchAlgorithmException {
-    // Multipart upload, multipart copy
-    writeRenameReadCompare(new Path("/test/xlarge"), 52428800L); // 50MB byte
+    // Multipart upload, shallow copy
+    writeRenameReadCompare(new Path("/test/xlarge"),
+        Constants.MULTIPART_UPLOAD_PART_SIZE_DEFAULT + 1);
   }
 }

@@ -18,12 +18,20 @@
 
 package org.apache.hadoop.mapred.uploader;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.junit.Assert;
 import org.junit.Assume;
 import org.junit.Before;
@@ -36,6 +44,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -45,6 +54,7 @@ import java.util.Random;
 import java.util.Set;
 import java.util.zip.GZIPInputStream;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.apache.hadoop.fs.FileSystem.FS_DEFAULT_NAME_KEY;
 
 /**
@@ -74,12 +84,15 @@ public class TestFrameworkUploader {
     FrameworkUploader uploader = new FrameworkUploader();
     boolean success = uploader.parseArguments(args);
     Assert.assertFalse("Expected to print help", success);
-    Assert.assertEquals("Expected ignore run", null,
-        uploader.input);
-    Assert.assertEquals("Expected ignore run", null,
-        uploader.whitelist);
-    Assert.assertEquals("Expected ignore run", null,
-        uploader.target);
+    assertThat(uploader.input)
+        .withFailMessage("Expected ignore run")
+        .isNull();
+    assertThat(uploader.whitelist)
+        .withFailMessage("Expected ignore run")
+        .isNull();
+    assertThat(uploader.target)
+        .withFailMessage("Expected ignore run")
+        .isNull();
   }
 
   /**
@@ -424,12 +437,25 @@ public class TestFrameworkUploader {
       // Create a target file
       File targetFile = new File(parent, "a.txt");
       try(FileOutputStream os = new FileOutputStream(targetFile)) {
-        IOUtils.writeLines(Lists.newArrayList("a", "b"), null, os);
+        IOUtils.writeLines(Lists.newArrayList("a", "b"), null, os, StandardCharsets.UTF_8);
       }
       Assert.assertFalse(uploader.checkSymlink(targetFile));
 
       // Create a symlink to the target
       File symlinkToTarget = new File(parent, "symlinkToTarget.txt");
+      try {
+        Files.createSymbolicLink(
+            Paths.get(symlinkToTarget.getAbsolutePath()),
+            Paths.get(targetFile.getAbsolutePath()));
+      } catch (UnsupportedOperationException e) {
+        // Symlinks are not supported, so ignore the test
+        Assume.assumeTrue(false);
+      }
+      Assert.assertTrue(uploader.checkSymlink(symlinkToTarget));
+
+      // Create a symlink to the target with /./ in the path
+      symlinkToTarget = new File(parent.getAbsolutePath() +
+            "/./symlinkToTarget2.txt");
       try {
         Files.createSymbolicLink(
             Paths.get(symlinkToTarget.getAbsolutePath()),
@@ -452,9 +478,59 @@ public class TestFrameworkUploader {
       }
       Assert.assertFalse(uploader.checkSymlink(symlinkOutside));
     } finally {
-      FileUtils.deleteDirectory(parent);
+      FileUtils.forceDelete(parent);
     }
 
   }
 
+  @Test
+  public void testPermissionSettingsOnRestrictiveUmask()
+      throws Exception {
+    File parent = new File(testDir);
+    parent.deleteOnExit();
+    MiniDFSCluster cluster = null;
+
+    try {
+      Assert.assertTrue("Directory creation failed", parent.mkdirs());
+      Configuration hdfsConf = new HdfsConfiguration();
+      String namenodeDir = new File(MiniDFSCluster.getBaseDirectory(),
+          "name").getAbsolutePath();
+      hdfsConf.set(DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY, namenodeDir);
+      hdfsConf.set(DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY, namenodeDir);
+      hdfsConf.set(CommonConfigurationKeys.FS_PERMISSIONS_UMASK_KEY, "027");
+      cluster = new MiniDFSCluster.Builder(hdfsConf)
+          .numDataNodes(1).build();
+      DistributedFileSystem dfs = cluster.getFileSystem();
+      cluster.waitActive();
+
+      File file1 = new File(parent, "a.jar");
+      file1.createNewFile();
+      File file2 = new File(parent, "b.jar");
+      file2.createNewFile();
+      File file3 = new File(parent, "c.jar");
+      file3.createNewFile();
+
+      FrameworkUploader uploader = new FrameworkUploader();
+      uploader.whitelist = "";
+      uploader.blacklist = "";
+      uploader.input = parent.getAbsolutePath() + File.separatorChar + "*";
+      String hdfsUri = hdfsConf.get(FS_DEFAULT_NAME_KEY);
+      String targetPath = "/test.tar.gz";
+      uploader.target = hdfsUri + targetPath;
+      uploader.acceptableReplication = 1;
+      uploader.setConf(hdfsConf);
+
+      uploader.collectPackages();
+      uploader.buildPackage();
+
+      FileStatus fileStatus = dfs.getFileStatus(new Path(targetPath));
+      FsPermission perm = fileStatus.getPermission();
+      Assert.assertEquals("Permissions", new FsPermission(0644), perm);
+    } finally {
+      if (cluster != null) {
+        cluster.close();
+      }
+      FileUtils.deleteDirectory(parent);
+    }
+  }
 }

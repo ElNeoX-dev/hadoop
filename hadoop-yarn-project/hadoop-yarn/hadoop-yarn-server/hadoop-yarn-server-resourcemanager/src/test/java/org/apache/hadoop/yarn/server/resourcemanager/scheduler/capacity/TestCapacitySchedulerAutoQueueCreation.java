@@ -17,22 +17,29 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.api.records.QueueState;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+import org.apache.hadoop.yarn.server.resourcemanager.MockNM;
 import org.apache.hadoop.yarn.server.resourcemanager.MockNodes;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmissionData;
+import org.apache.hadoop.yarn.server.resourcemanager.MockRMAppSubmitter;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContextImpl;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.NullRMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
 import org.apache.hadoop.yarn.server.resourcemanager.placement
     .ApplicationPlacementContext;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
@@ -70,7 +77,6 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -82,7 +88,6 @@ import static org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager
     .NO_LABEL;
 import static org.apache.hadoop.yarn.server.resourcemanager.placement.UserGroupMappingPlacementRule.CURRENT_USER_MAPPING;
 import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueueUtils.EPSILON;
-
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -98,7 +103,7 @@ import static org.mockito.Mockito.when;
 public class TestCapacitySchedulerAutoQueueCreation
     extends TestCapacitySchedulerAutoCreatedQueueBase {
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestCapacitySchedulerAutoQueueCreation.class);
 
   private static final Resource TEMPLATE_MAX_RES = Resource.newInstance(16 *
@@ -132,6 +137,7 @@ public class TestCapacitySchedulerAutoQueueCreation
           expectedChildQueueAbsCapacity, accessibleNodeLabelsOnC);
 
       validateUserAndAppLimits(autoCreatedLeafQueue, 1000, 1000);
+      validateContainerLimits(autoCreatedLeafQueue, 6, 10240);
 
       assertTrue(autoCreatedLeafQueue
           .getOrderingPolicy() instanceof FairOrderingPolicy);
@@ -160,6 +166,64 @@ public class TestCapacitySchedulerAutoQueueCreation
     }
   }
 
+  @Test(timeout = 20000)
+  public void testAutoCreateLeafQueueCreationSchedulerMaximumAllocation()
+      throws Exception {
+    try {
+      // Check the minimum/maximum allocation settings via the
+      // yarn.scheduler.minimum/maximum-allocation-mb/vcore property
+      setSchedulerMinMaxAllocation(cs.getConfiguration());
+      cs.getConfiguration().setAutoCreatedLeafQueueConfigMaximumAllocation(C,
+          "memory-mb=18384,vcores=8");
+      cs.reinitialize(cs.getConfiguration(), mockRM.getRMContext());
+
+      // submit an app
+      submitApp(mockRM, cs.getQueue(PARENT_QUEUE), USER0, USER0, 1, 1);
+
+      // check preconditions
+      List<ApplicationAttemptId> appsInC = cs.getAppsInQueue(PARENT_QUEUE);
+      assertEquals(1, appsInC.size());
+      assertNotNull(cs.getQueue(USER0));
+
+      AutoCreatedLeafQueue autoCreatedLeafQueue =
+          (AutoCreatedLeafQueue) cs.getQueue(USER0);
+
+      validateContainerLimits(autoCreatedLeafQueue, 8, 18384);
+    } finally {
+      cleanupQueue(USER0);
+      cleanupQueue(TEST_GROUPUSER);
+    }
+  }
+
+  @Test(timeout = 20000)
+  public void testAutoCreateLeafQueueCreationUsingFullParentPath()
+      throws Exception {
+
+    try {
+      setupGroupQueueMappings("root.d", cs.getConfiguration(), "%user");
+      cs.reinitialize(cs.getConfiguration(), mockRM.getRMContext());
+
+      submitApp(mockRM, cs.getQueue("d"), TEST_GROUPUSER, TEST_GROUPUSER, 1, 1);
+      AutoCreatedLeafQueue autoCreatedLeafQueue =
+          (AutoCreatedLeafQueue) cs.getQueue(TEST_GROUPUSER);
+      ManagedParentQueue parentQueue = (ManagedParentQueue) cs.getQueue("d");
+      assertEquals(parentQueue, autoCreatedLeafQueue.getParent());
+
+      Map<String, Float> expectedChildQueueAbsCapacity =
+          new HashMap<String, Float>() {{
+            put(NO_LABEL, 0.02f);
+          }};
+
+      validateInitialQueueEntitlement(parentQueue, TEST_GROUPUSER,
+          expectedChildQueueAbsCapacity,
+          new HashSet<String>() {{ add(NO_LABEL); }});
+
+    } finally {
+      cleanupQueue(USER0);
+      cleanupQueue(TEST_GROUPUSER);
+    }
+  }
+
   @Test
   public void testReinitializeStoppedAutoCreatedLeafQueue() throws Exception {
     try {
@@ -170,11 +234,25 @@ public class TestCapacitySchedulerAutoQueueCreation
 
       // submit an app
 
-      RMApp app1 = mockRM.submitApp(GB, "test-auto-queue-creation-1", USER0,
-          null, USER0);
+      MockRMAppSubmissionData data1 =
+          MockRMAppSubmissionData.Builder.createWithMemory(GB, mockRM)
+              .withAppName("test-auto-queue-creation-1")
+              .withUser(USER0)
+              .withAcls(null)
+              .withQueue(USER0)
+              .withUnmanagedAM(false)
+              .build();
+      RMApp app1 = MockRMAppSubmitter.submit(mockRM, data1);
 
-      RMApp app2 = mockRM.submitApp(GB, "test-auto-queue-creation-2", USER1,
-          null, USER1);
+      MockRMAppSubmissionData data =
+          MockRMAppSubmissionData.Builder.createWithMemory(GB, mockRM)
+              .withAppName("test-auto-queue-creation-2")
+              .withUser(USER1)
+              .withAcls(null)
+              .withQueue(USER1)
+              .withUnmanagedAM(false)
+              .build();
+      RMApp app2 = MockRMAppSubmitter.submit(mockRM, data);
       // check preconditions
       List<ApplicationAttemptId> appsInC = cs.getAppsInQueue(PARENT_QUEUE);
       assertEquals(2, appsInC.size());
@@ -243,7 +321,7 @@ public class TestCapacitySchedulerAutoQueueCreation
       expectedAbsChildQueueCapacity =
           populateExpectedAbsCapacityByLabelForParentQueue(1);
 
-      validateInitialQueueEntitlement(parentQueue, leafQueue.getQueueName(),
+      validateInitialQueueEntitlement(parentQueue, leafQueue.getQueuePath(),
           expectedAbsChildQueueCapacity, accessibleNodeLabelsOnC);
 
     } finally {
@@ -256,8 +334,7 @@ public class TestCapacitySchedulerAutoQueueCreation
       throws Exception {
     CapacityScheduler newCS = new CapacityScheduler();
     try {
-      CapacitySchedulerConfiguration newConf =
-          new CapacitySchedulerConfiguration();
+      CapacitySchedulerConfiguration newConf = setupSchedulerConfiguration();
       setupQueueConfiguration(newConf);
 
       newConf.setAutoCreateChildQueueEnabled(C, false);
@@ -285,8 +362,7 @@ public class TestCapacitySchedulerAutoQueueCreation
       throws Exception {
     CapacityScheduler newCS = new CapacityScheduler();
     try {
-      CapacitySchedulerConfiguration newConf =
-          new CapacitySchedulerConfiguration();
+      CapacitySchedulerConfiguration newConf = setupSchedulerConfiguration();
       setupQueueConfiguration(newConf);
       newConf.setAutoCreatedLeafQueueConfigCapacity(A1, A1_CAPACITY / 10);
       newConf.setAutoCreateChildQueueEnabled(A1, true);
@@ -315,8 +391,7 @@ public class TestCapacitySchedulerAutoQueueCreation
       throws Exception {
     CapacityScheduler newCS = new CapacityScheduler();
     try {
-      CapacitySchedulerConfiguration newConf =
-          new CapacitySchedulerConfiguration();
+      CapacitySchedulerConfiguration newConf = setupSchedulerConfiguration();
       setupQueueConfiguration(newConf);
       newConf.setAutoCreatedLeafQueueConfigCapacity(A, A_CAPACITY / 10);
       newConf.setAutoCreateChildQueueEnabled(A, true);
@@ -352,8 +427,14 @@ public class TestCapacitySchedulerAutoQueueCreation
 
     // submit an app under a different queue name which does not exist
     // and queue mapping does not exist for this user
-    RMApp app = mockRM.submitApp(GB, "app", INVALID_USER, null, INVALID_USER,
-        false);
+    RMApp app = MockRMAppSubmitter.submit(mockRM,
+        MockRMAppSubmissionData.Builder.createWithMemory(GB, mockRM)
+            .withAppName("app")
+            .withUser(INVALID_USER)
+            .withAcls(null)
+            .withQueue(INVALID_USER)
+            .withWaitForAppAcceptedState(false)
+            .build());
     mockRM.drainEvents();
     mockRM.waitForState(app.getApplicationId(), RMAppState.FAILED);
     assertEquals(RMAppState.FAILED, app.getState());
@@ -622,7 +703,7 @@ public class TestCapacitySchedulerAutoQueueCreation
       submitApp(newMockRM, parentQueue, USER1, USER1, 1, 1);
       Map<String, Float> expectedAbsChildQueueCapacity =
           populateExpectedAbsCapacityByLabelForParentQueue(1);
-      validateInitialQueueEntitlement(newCS, parentQueue, USER1,
+      validateInitialQueueEntitlement(newMockRM, newCS, parentQueue, USER1,
           expectedAbsChildQueueCapacity, accessibleNodeLabelsOnC);
 
       //submit another app2 as USER2
@@ -630,7 +711,7 @@ public class TestCapacitySchedulerAutoQueueCreation
           1);
       expectedAbsChildQueueCapacity =
           populateExpectedAbsCapacityByLabelForParentQueue(2);
-      validateInitialQueueEntitlement(newCS, parentQueue, USER2,
+      validateInitialQueueEntitlement(newMockRM, newCS, parentQueue, USER2,
           expectedAbsChildQueueCapacity, accessibleNodeLabelsOnC);
 
       //validate total activated abs capacity remains the same
@@ -725,7 +806,7 @@ public class TestCapacitySchedulerAutoQueueCreation
 
       Map<String, Float> expectedChildQueueAbsCapacity =
       populateExpectedAbsCapacityByLabelForParentQueue(1);
-      validateInitialQueueEntitlement(newCS, parentQueue, USER1,
+      validateInitialQueueEntitlement(newMockRM, newCS, parentQueue, USER1,
           expectedChildQueueAbsCapacity, accessibleNodeLabelsOnC);
 
       //submit another app2 as USER2
@@ -734,7 +815,7 @@ public class TestCapacitySchedulerAutoQueueCreation
           1);
       expectedChildQueueAbsCapacity =
           populateExpectedAbsCapacityByLabelForParentQueue(2);
-      validateInitialQueueEntitlement(newCS, parentQueue, USER2,
+      validateInitialQueueEntitlement(newMockRM, newCS, parentQueue, USER2,
           expectedChildQueueAbsCapacity, accessibleNodeLabelsOnC);
 
       //update parent queue capacity
@@ -773,6 +854,7 @@ public class TestCapacitySchedulerAutoQueueCreation
       validateCapacities(user3Queue, 0.3f, 0.09f, 0.4f,0.2f);
 
       validateUserAndAppLimits(user3Queue, 900, 900);
+      validateContainerLimits(user3Queue, 6, 10240);
 
       GuaranteedOrZeroCapacityOverTimePolicy autoCreatedQueueManagementPolicy =
           (GuaranteedOrZeroCapacityOverTimePolicy) ((ManagedParentQueue)
@@ -787,6 +869,64 @@ public class TestCapacitySchedulerAutoQueueCreation
       if (newMockRM != null) {
         ((CapacityScheduler) newMockRM.getResourceScheduler()).stop();
         newMockRM.stop();
+      }
+    }
+  }
+
+  @Test
+  public void testDynamicAutoQueueCreationWithTags()
+      throws Exception {
+    MockRM rm = null;
+    try {
+      CapacitySchedulerConfiguration csConf
+          = new CapacitySchedulerConfiguration();
+      csConf.setQueues(CapacitySchedulerConfiguration.ROOT,
+          new String[] {"a", "b"});
+      csConf.setCapacity("root.a", 90);
+      csConf.setCapacity("root.b", 10);
+      csConf.setAutoCreateChildQueueEnabled("root.a", true);
+      csConf.setAutoCreatedLeafQueueConfigCapacity("root.a", 50);
+      csConf.setAutoCreatedLeafQueueConfigMaxCapacity("root.a", 100);
+      csConf.setAcl("root.a", QueueACL.ADMINISTER_QUEUE, "*");
+      csConf.setAcl("root.a", QueueACL.SUBMIT_APPLICATIONS, "*");
+      csConf.setBoolean(YarnConfiguration
+          .APPLICATION_TAG_BASED_PLACEMENT_ENABLED, true);
+      csConf.setStrings(YarnConfiguration
+          .APPLICATION_TAG_BASED_PLACEMENT_USER_WHITELIST, "hadoop");
+      csConf.set(CapacitySchedulerConfiguration.QUEUE_MAPPING,
+          "u:%user:root.a.%user");
+
+      RMNodeLabelsManager mgr = new NullRMNodeLabelsManager();
+      mgr.init(csConf);
+      rm = new MockRM(csConf) {
+        @Override
+        public RMNodeLabelsManager createNodeLabelManager() {
+          return mgr;
+        }
+      };
+      rm.start();
+      MockNM nm = rm.registerNode("127.0.0.1:1234", 16 * GB);
+
+      MockRMAppSubmissionData data =
+          MockRMAppSubmissionData.Builder.createWithMemory(GB, rm)
+          .withAppName("apptodynamicqueue")
+          .withUser("hadoop")
+          .withAcls(null)
+          .withUnmanagedAM(false)
+          .withApplicationTags(Sets.newHashSet("userid=testuser"))
+          .build();
+      RMApp app = MockRMAppSubmitter.submit(rm, data);
+      MockRM.launchAndRegisterAM(app, rm, nm);
+      nm.nodeHeartbeat(true);
+
+      CapacityScheduler cs = (CapacityScheduler) rm.getResourceScheduler();
+      CSQueue queue = cs.getQueue("root.a.testuser");
+      assertNotNull("Leaf queue has not been auto-created", queue);
+      assertEquals("Number of running applications", 1,
+          queue.getNumApplications());
+    } finally {
+      if (rm != null) {
+        rm.close();
       }
     }
   }

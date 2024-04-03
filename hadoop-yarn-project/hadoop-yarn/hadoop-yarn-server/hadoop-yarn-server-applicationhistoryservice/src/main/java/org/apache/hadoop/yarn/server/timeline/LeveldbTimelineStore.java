@@ -18,10 +18,9 @@
 
 package org.apache.hadoop.yarn.server.timeline;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.apache.commons.collections.map.LRUMap;
-import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -32,7 +31,6 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.WritableComparator;
 import org.apache.hadoop.service.AbstractService;
-import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.records.timeline.*;
 import org.apache.hadoop.yarn.api.records.timeline.TimelineEvents.EventsOfOneEntity;
 import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse.TimelinePutError;
@@ -41,6 +39,7 @@ import org.apache.hadoop.yarn.proto.YarnServerCommonProtos.VersionProto;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
 import org.apache.hadoop.yarn.server.timeline.TimelineDataManager.CheckAcl;
+import org.apache.hadoop.yarn.server.timeline.util.LeveldbUtils;
 import org.apache.hadoop.yarn.server.timeline.util.LeveldbUtils.KeyBuilder;
 import org.apache.hadoop.yarn.server.timeline.util.LeveldbUtils.KeyParser;
 import org.apache.hadoop.yarn.server.utils.LeveldbIterator;
@@ -48,7 +47,6 @@ import org.fusesource.leveldbjni.JniDBFactory;
 import org.iq80.leveldb.*;
 import org.slf4j.LoggerFactory;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.*;
@@ -242,19 +240,7 @@ public class LeveldbTimelineStore extends AbstractService
       IOUtils.cleanupWithLogger(LOG, localFS);
     }
     LOG.info("Using leveldb path " + dbPath);
-    try {
-      db = factory.open(new File(dbPath.toString()), options);
-    } catch (IOException ioe) {
-      File dbFile = new File(dbPath.toString());
-      File backupPath = new File(
-          dbPath.toString() + BACKUP_EXT + Time.monotonicNow());
-      LOG.warn("Incurred exception while loading LevelDb database. Backing " +
-          "up at "+ backupPath, ioe);
-      FileUtils.copyDirectory(dbFile, backupPath);
-      LOG.warn("Going to try repair");
-      factory.repair(dbFile, options);
-      db = factory.open(dbFile, options);
-    }
+    db = LeveldbUtils.loadOrRepairLevelDb(factory, dbPath, options);
     checkVersion();
     startTimeWriteCache =
         Collections.synchronizedMap(new LRUMap(getStartTimeWriteCacheSize(
@@ -986,8 +972,8 @@ public class LeveldbTimelineStore extends AbstractService
 
   @Override
   public TimelinePutResponse put(TimelineEntities entities) {
+    deleteLock.readLock().lock();
     try {
-      deleteLock.readLock().lock();
       TimelinePutResponse response = new TimelinePutResponse();
       for (TimelineEntity entity : entities.getEntities()) {
         put(entity, response, false);
@@ -1001,8 +987,8 @@ public class LeveldbTimelineStore extends AbstractService
   @Private
   @VisibleForTesting
   public TimelinePutResponse putWithNoDomainId(TimelineEntities entities) {
+    deleteLock.readLock().lock();
     try {
-      deleteLock.readLock().lock();
       TimelinePutResponse response = new TimelinePutResponse();
       for (TimelineEntity entity : entities.getEntities()) {
         put(entity, response, true);
@@ -1424,9 +1410,7 @@ public class LeveldbTimelineStore extends AbstractService
 
       writeBatch = db.createWriteBatch();
 
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Deleting entity type:" + entityType + " id:" + entityId);
-      }
+      LOG.debug("Deleting entity type:{} id:{}", entityType, entityId);
       // remove start time from cache and db
       writeBatch.delete(createStartTimeLookupKey(entityId, entityType));
       EntityIdentifier entityIdentifier =
@@ -1452,11 +1436,8 @@ public class LeveldbTimelineStore extends AbstractService
           Object value = GenericObjectMapper.read(key, kp.getOffset());
           deleteKeysWithPrefix(writeBatch, addPrimaryFilterToKey(name, value,
               deletePrefix), pfIterator);
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Deleting entity type:" + entityType + " id:" +
-                entityId + " primary filter entry " + name + " " +
-                value);
-          }
+          LOG.debug("Deleting entity type:{} id:{} primary filter entry {} {}",
+              entityType, entityId, name, value);
         } else if (key[prefixlen] == RELATED_ENTITIES_COLUMN[0]) {
           kp = new KeyParser(key,
               prefixlen + RELATED_ENTITIES_COLUMN.length);
@@ -1471,11 +1452,9 @@ public class LeveldbTimelineStore extends AbstractService
           }
           writeBatch.delete(createReverseRelatedEntityKey(id, type,
               relatedEntityStartTime, entityId, entityType));
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Deleting entity type:" + entityType + " id:" +
-                entityId + " from invisible reverse related entity " +
-                "entry of type:" + type + " id:" + id);
-          }
+          LOG.debug("Deleting entity type:{} id:{} from invisible reverse"
+              + " related entity entry of type:{} id:{}", entityType,
+              entityId, type, id);
         } else if (key[prefixlen] ==
             INVISIBLE_REVERSE_RELATED_ENTITIES_COLUMN[0]) {
           kp = new KeyParser(key, prefixlen +
@@ -1491,11 +1470,8 @@ public class LeveldbTimelineStore extends AbstractService
           }
           writeBatch.delete(createRelatedEntityKey(id, type,
               relatedEntityStartTime, entityId, entityType));
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Deleting entity type:" + entityType + " id:" +
-                entityId + " from related entity entry of type:" +
-                type + " id:" + id);
-          }
+          LOG.debug("Deleting entity type:{} id:{} from related entity entry"
+              +" of type:{} id:{}", entityType, entityId, type, id);
         }
       }
       WriteOptions writeOptions = new WriteOptions();
@@ -1525,8 +1501,8 @@ public class LeveldbTimelineStore extends AbstractService
         LeveldbIterator iterator = null;
         LeveldbIterator pfIterator = null;
         long typeCount = 0;
+        deleteLock.writeLock().lock();
         try {
-          deleteLock.writeLock().lock();
           iterator = getDbIterator(false);
           pfIterator = getDbIterator(false);
 

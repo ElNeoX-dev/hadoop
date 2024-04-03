@@ -30,7 +30,7 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.Shell;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Wrapper for the Unix stat(1) command. Used to workaround the lack of 
@@ -76,8 +76,8 @@ public class Stat extends Shell {
   }
 
   /**
-   * Whether Stat is supported on the current platform
-   * @return
+   * Whether Stat is supported on the current platform.
+   * @return if is available true, not false.
    */
   public static boolean isAvailable() {
     if (Shell.LINUX || Shell.FREEBSD || Shell.MAC) {

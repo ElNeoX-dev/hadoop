@@ -58,6 +58,11 @@ import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.atLeast;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+
 @SuppressWarnings("unchecked")
 public class TestFileOutputCommitter {
   private static final Path outDir = new Path(
@@ -229,7 +234,7 @@ public class TestFileOutputCommitter {
     expectedOutput.append(key1).append("\n");
     expectedOutput.append(key2).append('\t').append(val2).append("\n");
     String output = slurp(expectedFile);
-    assertEquals(output, expectedOutput.toString());
+    assertThat(output).isEqualTo(expectedOutput.toString());
   }
 
   private void validateMapFileOutputContent(
@@ -432,6 +437,35 @@ public class TestFileOutputCommitter {
     }
 
     FileUtil.fullyDelete(new File(outDir.toString()));
+  }
+
+  @Test
+  public void testProgressDuringMerge() throws Exception {
+    Job job = Job.getInstance();
+    FileOutputFormat.setOutputPath(job, outDir);
+    Configuration conf = job.getConfiguration();
+    conf.set(MRJobConfig.TASK_ATTEMPT_ID, attempt);
+    conf.setInt(FileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION,
+        2);
+    JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
+    TaskAttemptContext tContext = spy(new TaskAttemptContextImpl(conf, taskID));
+    FileOutputCommitter committer = new FileOutputCommitter(outDir, tContext);
+
+    // setup
+    committer.setupJob(jContext);
+    committer.setupTask(tContext);
+
+    // write output
+    MapFileOutputFormat theOutputFormat = new MapFileOutputFormat();
+    RecordWriter theRecordWriter = theOutputFormat.getRecordWriter(tContext);
+    writeMapFileOutput(theRecordWriter, tContext);
+
+    // do commit
+    committer.commitTask(tContext);
+    //make sure progress flag was set.
+    // The first time it is set is during commit but ensure that
+    // mergePaths call makes it go again.
+    verify(tContext, atLeast(2)).progress();
   }
 
   @Test
@@ -722,66 +756,74 @@ public class TestFileOutputCommitter {
     conf.setInt(FileOutputCommitter.FILEOUTPUTCOMMITTER_ALGORITHM_VERSION,
         version);
 
-    conf.setClass("fs.file.impl", RLFS.class, FileSystem.class);
+    final String fileImpl = "fs.file.impl";
+    final String fileImplClassname = "org.apache.hadoop.fs.LocalFileSystem";
+    conf.setClass(fileImpl, RLFS.class, FileSystem.class);
     FileSystem.closeAll();
 
-    final JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
-    final FileOutputCommitter amCommitter =
-        new FileOutputCommitter(outDir, jContext);
-    amCommitter.setupJob(jContext);
-
-    final TaskAttemptContext[] taCtx = new TaskAttemptContextImpl[2];
-    taCtx[0] = new TaskAttemptContextImpl(conf, taskID);
-    taCtx[1] = new TaskAttemptContextImpl(conf, taskID1);
-
-    final TextOutputFormat[] tof = new TextOutputFormat[2];
-    for (int i = 0; i < tof.length; i++) {
-      tof[i] = new TextOutputFormat() {
-        @Override
-        public Path getDefaultWorkFile(TaskAttemptContext context,
-            String extension) throws IOException {
-          final FileOutputCommitter foc = (FileOutputCommitter)
-              getOutputCommitter(context);
-          return new Path(new Path(foc.getWorkPath(), SUB_DIR),
-              getUniqueFile(context, getOutputName(context), extension));
-        }
-      };
-    }
-
-    final ExecutorService executor = HadoopExecutors.newFixedThreadPool(2);
     try {
-      for (int i = 0; i < taCtx.length; i++) {
-        final int taskIdx = i;
-        executor.submit(new Callable<Void>() {
+      final JobContext jContext = new JobContextImpl(conf, taskID.getJobID());
+      final FileOutputCommitter amCommitter =
+          new FileOutputCommitter(outDir, jContext);
+      amCommitter.setupJob(jContext);
+
+      final TaskAttemptContext[] taCtx = new TaskAttemptContextImpl[2];
+      taCtx[0] = new TaskAttemptContextImpl(conf, taskID);
+      taCtx[1] = new TaskAttemptContextImpl(conf, taskID1);
+
+      final TextOutputFormat[] tof = new TextOutputFormat[2];
+      for (int i = 0; i < tof.length; i++) {
+        tof[i] = new TextOutputFormat() {
           @Override
-          public Void call() throws IOException, InterruptedException {
-            final OutputCommitter outputCommitter =
-                tof[taskIdx].getOutputCommitter(taCtx[taskIdx]);
-            outputCommitter.setupTask(taCtx[taskIdx]);
-            final RecordWriter rw =
-                tof[taskIdx].getRecordWriter(taCtx[taskIdx]);
-            writeOutput(rw, taCtx[taskIdx]);
-            outputCommitter.commitTask(taCtx[taskIdx]);
-            return null;
+          public Path getDefaultWorkFile(TaskAttemptContext context,
+              String extension) throws IOException {
+            final FileOutputCommitter foc = (FileOutputCommitter)
+                getOutputCommitter(context);
+            return new Path(new Path(foc.getWorkPath(), SUB_DIR),
+                getUniqueFile(context, getOutputName(context), extension));
           }
-        });
+        };
       }
+
+      final ExecutorService executor = HadoopExecutors.newFixedThreadPool(2);
+      try {
+        for (int i = 0; i < taCtx.length; i++) {
+          final int taskIdx = i;
+          executor.submit(new Callable<Void>() {
+            @Override
+            public Void call() throws IOException, InterruptedException {
+              final OutputCommitter outputCommitter =
+                  tof[taskIdx].getOutputCommitter(taCtx[taskIdx]);
+              outputCommitter.setupTask(taCtx[taskIdx]);
+              final RecordWriter rw =
+                  tof[taskIdx].getRecordWriter(taCtx[taskIdx]);
+              writeOutput(rw, taCtx[taskIdx]);
+              outputCommitter.commitTask(taCtx[taskIdx]);
+              return null;
+            }
+          });
+        }
+      } finally {
+        executor.shutdown();
+        while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
+          LOG.info("Awaiting thread termination!");
+        }
+      }
+
+      amCommitter.commitJob(jContext);
+      final RawLocalFileSystem lfs = new RawLocalFileSystem();
+      lfs.setConf(conf);
+      assertFalse("Must not end up with sub_dir/sub_dir",
+          lfs.exists(new Path(OUT_SUB_DIR, SUB_DIR)));
+
+      // validate output
+      validateContent(OUT_SUB_DIR);
+      FileUtil.fullyDelete(new File(outDir.toString()));
     } finally {
-      executor.shutdown();
-      while (!executor.awaitTermination(1, TimeUnit.SECONDS)) {
-        LOG.info("Awaiting thread termination!");
-      }
+      // needed to avoid this test contaminating others in the same JVM
+      FileSystem.closeAll();
+      conf.set(fileImpl, fileImplClassname);
     }
-
-    amCommitter.commitJob(jContext);
-    final RawLocalFileSystem lfs = new RawLocalFileSystem();
-    lfs.setConf(conf);
-    assertFalse("Must not end up with sub_dir/sub_dir",
-        lfs.exists(new Path(OUT_SUB_DIR, SUB_DIR)));
-
-    // validate output
-    validateContent(OUT_SUB_DIR);
-    FileUtil.fullyDelete(new File(outDir.toString()));
   }
 
   @Test

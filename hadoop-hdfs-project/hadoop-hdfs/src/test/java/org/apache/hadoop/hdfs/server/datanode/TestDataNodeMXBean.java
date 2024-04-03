@@ -28,9 +28,9 @@ import javax.management.ObjectName;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.base.Supplier;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
@@ -38,6 +38,10 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.MiniDFSNNTopology;
+import org.apache.hadoop.hdfs.protocol.datatransfer.sasl.SaslDataTransferTestCase;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.junit.Assert;
 import org.junit.Test;
@@ -49,9 +53,10 @@ import static org.junit.Assert.assertTrue;
 /**
  * Class for testing {@link DataNodeMXBean} implementation
  */
-public class TestDataNodeMXBean {
+public class TestDataNodeMXBean extends SaslDataTransferTestCase {
 
-  public static final Log LOG = LogFactory.getLog(TestDataNodeMXBean.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestDataNodeMXBean.class);
 
   @Test
   public void testDataNodeMXBean() throws Exception {
@@ -72,6 +77,10 @@ public class TestDataNodeMXBean {
       // get attribute "Version"
       String version = (String)mbs.getAttribute(mxbeanName, "Version");
       Assert.assertEquals(datanode.getVersion(),version);
+      // get attribute "DNStartedTimeInMillis"
+      long startTime = (long) mbs.getAttribute(mxbeanName, "DNStartedTimeInMillis");
+      Assert.assertTrue("Datanode start time should not be 0", startTime > 0);
+      Assert.assertEquals(datanode.getDNStartedTimeInMillis(), startTime);
       // get attribute "SotfwareVersion"
       String softwareVersion =
           (String)mbs.getAttribute(mxbeanName, "SoftwareVersion");
@@ -83,6 +92,7 @@ public class TestDataNodeMXBean {
       Assert.assertEquals(datanode.getRpcPort(),rpcPort);
       // get attribute "HttpPort"
       String httpPort = (String)mbs.getAttribute(mxbeanName, "HttpPort");
+      Assert.assertNotNull(httpPort);
       Assert.assertEquals(datanode.getHttpPort(),httpPort);
       // get attribute "NamenodeAddresses"
       String namenodeAddresses = (String)mbs.getAttribute(mxbeanName, 
@@ -116,6 +126,49 @@ public class TestDataNodeMXBean {
         cluster.shutdown();
       }
     }
+  }
+
+  @Test
+  public void testDataNodeMXBeanSecurityEnabled() throws Exception {
+    Configuration simpleConf = new Configuration();
+    Configuration secureConf = createSecureConfig("authentication");
+
+    // get attribute "SecurityEnabled" with simple configuration
+    try (MiniDFSCluster cluster =
+                 new MiniDFSCluster.Builder(simpleConf).build()) {
+      List<DataNode> datanodes = cluster.getDataNodes();
+      Assert.assertEquals(datanodes.size(), 1);
+      DataNode datanode = datanodes.get(0);
+
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+              "Hadoop:service=DataNode,name=DataNodeInfo");
+
+      boolean securityEnabled = (boolean) mbs.getAttribute(mxbeanName,
+              "SecurityEnabled");
+      Assert.assertFalse(securityEnabled);
+      Assert.assertEquals(datanode.isSecurityEnabled(), securityEnabled);
+    }
+
+    // get attribute "SecurityEnabled" with secure configuration
+    try (MiniDFSCluster cluster =
+                 new MiniDFSCluster.Builder(secureConf).build()) {
+      List<DataNode> datanodes = cluster.getDataNodes();
+      Assert.assertEquals(datanodes.size(), 1);
+      DataNode datanode = datanodes.get(0);
+
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+              "Hadoop:service=DataNode,name=DataNodeInfo");
+
+      boolean securityEnabled = (boolean) mbs.getAttribute(mxbeanName,
+              "SecurityEnabled");
+      Assert.assertTrue(securityEnabled);
+      Assert.assertEquals(datanode.isSecurityEnabled(), securityEnabled);
+    }
+
+    // setting back the authentication method
+    UserGroupInformation.setConfiguration(simpleConf);
   }
   
   private static String replaceDigits(final String s) {
@@ -244,4 +297,77 @@ public class TestDataNodeMXBean {
       if (cluster != null) {cluster.shutdown();}
     }
   }
+
+  @Test
+  public void testDataNodeMXBeanLastHeartbeats() throws Exception {
+    Configuration conf = new Configuration();
+    try (MiniDFSCluster cluster = new MiniDFSCluster
+        .Builder(conf)
+        .nnTopology(MiniDFSNNTopology.simpleHATopology(2))
+        .build()) {
+      cluster.waitActive();
+      cluster.transitionToActive(0);
+      cluster.transitionToStandby(1);
+
+      DataNode datanode = cluster.getDataNodes().get(0);
+
+      // Verify and wait until one of the BP service actor identifies active namenode as active
+      // and another as standby.
+      cluster.waitDatanodeConnectedToActive(datanode, 5000);
+
+      // Verify that last heartbeat sent to both namenodes in last 5 sec.
+      assertLastHeartbeatSentTime(datanode, "LastHeartbeat");
+      // Verify that last heartbeat response from both namenodes have been received within
+      // last 5 sec.
+      assertLastHeartbeatSentTime(datanode, "LastHeartbeatResponseTime");
+
+
+      NameNode sbNameNode = cluster.getNameNode(1);
+
+      // Stopping standby namenode
+      sbNameNode.stop();
+
+      // Verify that last heartbeat response time from one of the namenodes would stay much higher
+      // after stopping one namenode.
+      GenericTestUtils.waitFor(() -> {
+        List<Map<String, String>> bpServiceActorInfo = datanode.getBPServiceActorInfoMap();
+        Map<String, String> bpServiceActorInfo1 = bpServiceActorInfo.get(0);
+        Map<String, String> bpServiceActorInfo2 = bpServiceActorInfo.get(1);
+
+        long lastHeartbeatResponseTime1 =
+            Long.parseLong(bpServiceActorInfo1.get("LastHeartbeatResponseTime"));
+        long lastHeartbeatResponseTime2 =
+            Long.parseLong(bpServiceActorInfo2.get("LastHeartbeatResponseTime"));
+
+        LOG.info("Last heartbeat response from namenode 1: {}", lastHeartbeatResponseTime1);
+        LOG.info("Last heartbeat response from namenode 2: {}", lastHeartbeatResponseTime2);
+
+        return (lastHeartbeatResponseTime1 < 5L && lastHeartbeatResponseTime2 > 5L) || (
+            lastHeartbeatResponseTime1 > 5L && lastHeartbeatResponseTime2 < 5L);
+
+      }, 200, 15000,
+          "Last heartbeat response should be higher than 5s for at least one namenode");
+
+      // Verify that last heartbeat sent to both namenodes in last 5 sec even though
+      // the last heartbeat received from one of the namenodes is greater than 5 sec ago.
+      assertLastHeartbeatSentTime(datanode, "LastHeartbeat");
+    }
+  }
+
+  private static void assertLastHeartbeatSentTime(DataNode datanode, String lastHeartbeat) {
+    List<Map<String, String>> bpServiceActorInfo = datanode.getBPServiceActorInfoMap();
+    Map<String, String> bpServiceActorInfo1 = bpServiceActorInfo.get(0);
+    Map<String, String> bpServiceActorInfo2 = bpServiceActorInfo.get(1);
+
+    long lastHeartbeatSent1 =
+        Long.parseLong(bpServiceActorInfo1.get(lastHeartbeat));
+    long lastHeartbeatSent2 =
+        Long.parseLong(bpServiceActorInfo2.get(lastHeartbeat));
+
+    Assert.assertTrue(lastHeartbeat + " for first bp service actor is higher than 5s",
+        lastHeartbeatSent1 < 5L);
+    Assert.assertTrue(lastHeartbeat + " for second bp service actor is higher than 5s",
+        lastHeartbeatSent2 < 5L);
+  }
+
 }

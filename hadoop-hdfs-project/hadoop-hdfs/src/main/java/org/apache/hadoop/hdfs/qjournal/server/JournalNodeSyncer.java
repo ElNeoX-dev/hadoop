@@ -17,9 +17,10 @@
  */
 package org.apache.hadoop.hdfs.qjournal.server;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
@@ -35,9 +36,10 @@ import org.apache.hadoop.hdfs.server.common.Util;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.util.DataTransferThrottler;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Daemon;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,6 +55,7 @@ import java.security.PrivilegedExceptionAction;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A Journal Sync thread runs through the lifetime of the JN. It periodically
@@ -152,6 +155,9 @@ public class JournalNodeSyncer {
         LOG.warn("Could not add proxy for Journal at addresss " + addr, e);
       }
     }
+    // Check if there are any other JournalNodes before starting the sync.  Although some proxies
+    // may be unresolved now, the act of attempting to sync will instigate resolution when the
+    // servers become available.
     if (otherJNProxies.isEmpty()) {
       LOG.error("Cannot sync as there is no other JN available for sync.");
       return false;
@@ -174,7 +180,7 @@ public class JournalNodeSyncer {
       }
       if (!createEditsSyncDir()) {
         LOG.error("Failed to create directory for downloading log " +
-                "segments: %s. Stopping Journal Node Sync.",
+                "segments: {}. Stopping Journal Node Sync.",
             journal.getStorage().getEditsSyncDir());
         return;
       }
@@ -250,7 +256,7 @@ public class JournalNodeSyncer {
       editLogManifest = jnProxy.getEditLogManifestFromJournal(jid,
           nameServiceId, 0, false);
     } catch (IOException e) {
-      LOG.error("Could not sync with Journal at " +
+      LOG.debug("Could not sync with Journal at {}.",
           otherJNProxies.get(journalNodeIndexForSync), e);
       return;
     }
@@ -309,12 +315,24 @@ public class JournalNodeSyncer {
     return null;
   }
 
-  private List<InetSocketAddress> getJournalAddrList(String uriStr) throws
+  @VisibleForTesting
+  protected List<InetSocketAddress> getJournalAddrList(String uriStr) throws
       URISyntaxException,
       IOException {
     URI uri = new URI(uriStr);
-    return Util.getLoggerAddresses(uri,
-        Sets.newHashSet(jn.getBoundIpcAddress()));
+
+    InetSocketAddress boundIpcAddress = jn.getBoundIpcAddress();
+    Set<InetSocketAddress> excluded = Sets.newHashSet(boundIpcAddress);
+    List<InetSocketAddress> addrList = Util.getLoggerAddresses(uri, excluded);
+
+    // Exclude the current JournalNode instance (a local address and the same port).  If the address
+    // is bound to a local address on the same port, then remove it to handle scenarios where a
+    // wildcard address (e.g. "0.0.0.0") is used.   We can't simply exclude all local addresses
+    // since we may be running multiple servers on the same host.
+    addrList.removeIf(addr -> !addr.isUnresolved() &&  addr.getAddress().isAnyLocalAddress()
+          && boundIpcAddress.getPort() == addr.getPort());
+
+    return addrList;
   }
 
   private void getMissingLogSegments(List<RemoteEditLog> thisJournalEditLogs,
@@ -439,15 +457,23 @@ public class JournalNodeSyncer {
     File tmpEditsFile = jnStorage.getTemporaryEditsFile(
         log.getStartTxId(), log.getEndTxId());
 
-    try {
-      Util.doGetUrl(url, ImmutableList.of(tmpEditsFile), jnStorage, false,
-          logSegmentTransferTimeout, throttler);
-    } catch (IOException e) {
-      LOG.error("Download of Edit Log file for Syncing failed. Deleting temp " +
-          "file: " + tmpEditsFile);
-      if (!tmpEditsFile.delete()) {
-        LOG.warn("Deleting " + tmpEditsFile + " has failed");
+    if (!SecurityUtil.doAsLoginUser(() -> {
+      if (UserGroupInformation.isSecurityEnabled()) {
+        UserGroupInformation.getCurrentUser().checkTGTAndReloginFromKeytab();
       }
+      try {
+        Util.doGetUrl(url, ImmutableList.of(tmpEditsFile), jnStorage, false,
+            logSegmentTransferTimeout, throttler);
+      } catch (IOException e) {
+        LOG.error("Download of Edit Log file for Syncing failed. Deleting temp "
+            + "file: " + tmpEditsFile, e);
+        if (!tmpEditsFile.delete()) {
+          LOG.warn("Deleting " + tmpEditsFile + " has failed");
+        }
+        return false;
+      }
+      return true;
+    })) {
       return false;
     }
     LOG.info("Downloaded file " + tmpEditsFile.getName() + " of size " +
@@ -458,7 +484,7 @@ public class JournalNodeSyncer {
       moveSuccess = journal.moveTmpSegmentToCurrent(tmpEditsFile,
           finalEditsFile, log.getEndTxId());
     } catch (IOException e) {
-      LOG.info("Could not move %s to current directory.", tmpEditsFile);
+      LOG.info("Could not move {} to current directory.", tmpEditsFile);
     } finally {
       if (tmpEditsFile.exists() && !tmpEditsFile.delete()) {
         LOG.warn("Deleting " + tmpEditsFile + " has failed");
@@ -496,7 +522,7 @@ public class JournalNodeSyncer {
             @Override
             public InterQJournalProtocol run() throws IOException {
               RPC.setProtocolEngine(confCopy, InterQJournalProtocolPB.class,
-                  ProtobufRpcEngine.class);
+                  ProtobufRpcEngine2.class);
               InterQJournalProtocolPB interQJournalProtocolPB = RPC.getProxy(
                   InterQJournalProtocolPB.class,
                   RPC.getProtocolVersion(InterQJournalProtocolPB.class),

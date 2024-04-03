@@ -149,17 +149,31 @@ public class ContentSummary extends QuotaUsage implements Writable{
   @Deprecated
   public ContentSummary() {}
   
-  /** Constructor, deprecated by ContentSummary.Builder
+  /**
+   *  Constructor, deprecated by ContentSummary.Builder
    *  This constructor implicitly set spaceConsumed the same as length.
    *  spaceConsumed and length must be set explicitly with
-   *  ContentSummary.Builder
+   *  ContentSummary.Builder.
+   *
+   * @param length length.
+   * @param fileCount file count.
+   * @param directoryCount directory count.
    * */
   @Deprecated
   public ContentSummary(long length, long fileCount, long directoryCount) {
     this(length, fileCount, directoryCount, -1L, length, -1L);
   }
 
-  /** Constructor, deprecated by ContentSummary.Builder */
+  /**
+   * Constructor, deprecated by ContentSummary.Builder.
+   *
+   * @param length length.
+   * @param fileCount file count.
+   * @param directoryCount directory count.
+   * @param quota quota.
+   * @param spaceConsumed space consumed.
+   * @param spaceQuota space quota.
+   * */
   @Deprecated
   public ContentSummary(
       long length, long fileCount, long directoryCount, long quota,
@@ -172,7 +186,11 @@ public class ContentSummary extends QuotaUsage implements Writable{
     setSpaceQuota(spaceQuota);
   }
 
-  /** Constructor for ContentSummary.Builder*/
+  /**
+   * Constructor for ContentSummary.Builder.
+   *
+   * @param builder builder.
+   */
   private ContentSummary(Builder builder) {
     super(builder);
     this.length = builder.length;
@@ -281,6 +299,21 @@ public class ContentSummary extends QuotaUsage implements Writable{
 
   private static final String ALL_HEADER = QUOTA_HEADER + SUMMARY_HEADER;
 
+  /**
+   * Output format:<-------18-------> <----------24---------->
+   * <----------24---------->. <-------------28------------> SNAPSHOT_LENGTH
+   * SNAPSHOT_FILE_COUNT SNAPSHOT_DIR_COUNT SNAPSHOT_SPACE_CONSUMED
+   */
+  private static final String SNAPSHOT_FORMAT = "%18s %24s %24s %28s ";
+
+  private static final String[] SNAPSHOT_HEADER_FIELDS =
+      new String[] {"SNAPSHOT_LENGTH", "SNAPSHOT_FILE_COUNT",
+          "SNAPSHOT_DIR_COUNT", "SNAPSHOT_SPACE_CONSUMED"};
+
+  /** The header string. */
+  private static final String SNAPSHOT_HEADER =
+      String.format(SNAPSHOT_FORMAT, (Object[]) SNAPSHOT_HEADER_FIELDS);
+
 
   /** Return the header of the output.
    * if qOption is false, output directory count, file count, and content size;
@@ -293,7 +326,9 @@ public class ContentSummary extends QuotaUsage implements Writable{
     return qOption ? ALL_HEADER : SUMMARY_HEADER;
   }
 
-
+  public static String getSnapshotHeader() {
+    return SNAPSHOT_HEADER;
+  }
 
   /**
    * Returns the names of the fields from the summary header.
@@ -416,7 +451,7 @@ public class ContentSummary extends QuotaUsage implements Writable{
   }
 
   /**
-   * Formats a size to be human readable or in bytes
+   * Formats a size to be human readable or in bytes.
    * @param size value to be formatted
    * @param humanReadable flag indicating human readable or not
    * @return String representation of the size
@@ -425,5 +460,18 @@ public class ContentSummary extends QuotaUsage implements Writable{
     return humanReadable
       ? StringUtils.TraditionalBinaryPrefix.long2String(size, "", 1)
       : String.valueOf(size);
+  }
+
+  /**
+   * Return the string representation of the snapshot counts in the output
+   * format.
+   * @param hOption flag indicating human readable or not
+   * @return String representation of the snapshot counts
+   */
+  public String toSnapshot(boolean hOption) {
+    return String.format(SNAPSHOT_FORMAT, formatSize(snapshotLength, hOption),
+        formatSize(snapshotFileCount, hOption),
+        formatSize(snapshotDirectoryCount, hOption),
+        formatSize(snapshotSpaceConsumed, hOption));
   }
 }

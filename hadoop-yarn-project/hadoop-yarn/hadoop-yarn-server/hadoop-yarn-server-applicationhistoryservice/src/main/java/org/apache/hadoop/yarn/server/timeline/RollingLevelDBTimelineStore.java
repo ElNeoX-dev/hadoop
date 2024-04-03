@@ -18,10 +18,9 @@
 
 package org.apache.hadoop.yarn.server.timeline;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -37,7 +36,7 @@ import java.util.SortedSet;
 import java.util.TreeMap;
 
 import org.apache.commons.collections.map.LRUMap;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -62,6 +61,7 @@ import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
 import org.apache.hadoop.yarn.server.timeline.RollingLevelDB.RollingWriteBatch;
 import org.apache.hadoop.yarn.server.timeline.TimelineDataManager.CheckAcl;
+import org.apache.hadoop.yarn.server.timeline.util.LeveldbUtils;
 import org.apache.hadoop.yarn.server.timeline.util.LeveldbUtils.KeyBuilder;
 import org.apache.hadoop.yarn.server.timeline.util.LeveldbUtils.KeyParser;
 
@@ -199,6 +199,11 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
   static final String STARTTIME = "starttime-ldb";
   static final String OWNER = "owner-ldb";
 
+  @VisibleForTesting
+  //Extension to FILENAME where backup will be stored in case we need to
+  //call LevelDb recovery
+  static final String BACKUP_EXT = ".backup-";
+
   private static final byte[] DOMAIN_ID_COLUMN = "d".getBytes(UTF_8);
   private static final byte[] EVENTS_COLUMN = "e".getBytes(UTF_8);
   private static final byte[] PRIMARY_FILTERS_COLUMN = "f".getBytes(UTF_8);
@@ -238,6 +243,12 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
 
   public RollingLevelDBTimelineStore() {
     super(RollingLevelDBTimelineStore.class.getName());
+  }
+
+  private JniDBFactory factory;
+  @VisibleForTesting
+  void setFactory(JniDBFactory fact) {
+    this.factory = fact;
   }
 
   @Override
@@ -284,7 +295,9 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
     options.cacheSize(conf.getLong(
         TIMELINE_SERVICE_LEVELDB_READ_CACHE_SIZE,
         DEFAULT_TIMELINE_SERVICE_LEVELDB_READ_CACHE_SIZE));
-    JniDBFactory factory = new JniDBFactory();
+    if(factory == null) {
+      factory = new JniDBFactory();
+    }
     Path dbPath = new Path(
         conf.get(TIMELINE_SERVICE_LEVELDB_PATH), FILENAME);
     Path domainDBPath = new Path(dbPath, DOMAIN);
@@ -327,13 +340,13 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
         TIMELINE_SERVICE_LEVELDB_WRITE_BUFFER_SIZE,
         DEFAULT_TIMELINE_SERVICE_LEVELDB_WRITE_BUFFER_SIZE));
     LOG.info("Using leveldb path " + dbPath);
-    domaindb = factory.open(new File(domainDBPath.toString()), options);
+    domaindb = LeveldbUtils.loadOrRepairLevelDb(factory, domainDBPath, options);
     entitydb = new RollingLevelDB(ENTITY);
     entitydb.init(conf);
     indexdb = new RollingLevelDB(INDEX);
     indexdb.init(conf);
-    starttimedb = factory.open(new File(starttimeDBPath.toString()), options);
-    ownerdb = factory.open(new File(ownerDBPath.toString()), options);
+    starttimedb = LeveldbUtils.loadOrRepairLevelDb(factory, starttimeDBPath, options);
+    ownerdb = LeveldbUtils.loadOrRepairLevelDb(factory, ownerDBPath, options);
     checkVersion();
     startTimeWriteCache = Collections.synchronizedMap(new LRUMap(
         getStartTimeWriteCacheSize(conf)));
@@ -346,7 +359,7 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
 
     super.serviceInit(conf);
   }
-  
+
   @Override
   protected void serviceStart() throws Exception {
     if (getConfig().getBoolean(TIMELINE_SERVICE_TTL_ENABLE, true)) {
@@ -413,9 +426,7 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
       EnumSet<Field> fields) throws IOException {
     Long revStartTime = getStartTimeLong(entityId, entityType);
     if (revStartTime == null) {
-      if ( LOG.isDebugEnabled()) {
-        LOG.debug("Could not find start time for {} {} ", entityType, entityId);
-      }
+      LOG.debug("Could not find start time for {} {} ", entityType, entityId);
       return null;
     }
     byte[] prefix = KeyBuilder.newInstance().add(entityType)
@@ -424,9 +435,7 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
 
     DB db = entitydb.getDBForStartTime(revStartTime);
     if (db == null) {
-      if ( LOG.isDebugEnabled()) {
-        LOG.debug("Could not find db for {} {} ", entityType, entityId);
-      }
+      LOG.debug("Could not find db for {} {} ", entityType, entityId);
       return null;
     }
     try (DBIterator iterator = db.iterator()) {
@@ -797,39 +806,42 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
             entity = getEntity(entityId, entityType, startTime, queryFields,
                 iterator, key, kp.getOffset());
           }
-          // determine if the retrieved entity matches the provided secondary
-          // filters, and if so add it to the list of entities to return
-          boolean filterPassed = true;
-          if (secondaryFilters != null) {
-            for (NameValuePair filter : secondaryFilters) {
-              Object v = entity.getOtherInfo().get(filter.getName());
-              if (v == null) {
-                Set<Object> vs = entity.getPrimaryFilters()
-                    .get(filter.getName());
-                if (vs == null || !vs.contains(filter.getValue())) {
+
+          if (entity != null) {
+            // determine if the retrieved entity matches the provided secondary
+            // filters, and if so add it to the list of entities to return
+            boolean filterPassed = true;
+            if (secondaryFilters != null) {
+              for (NameValuePair filter : secondaryFilters) {
+                Object v = entity.getOtherInfo().get(filter.getName());
+                if (v == null) {
+                  Set<Object> vs = entity.getPrimaryFilters()
+                          .get(filter.getName());
+                  if (vs == null || !vs.contains(filter.getValue())) {
+                    filterPassed = false;
+                    break;
+                  }
+                } else if (!v.equals(filter.getValue())) {
                   filterPassed = false;
                   break;
                 }
-              } else if (!v.equals(filter.getValue())) {
-                filterPassed = false;
-                break;
               }
             }
-          }
-          if (filterPassed) {
-            if (entity.getDomainId() == null) {
-              entity.setDomainId(DEFAULT_DOMAIN_ID);
-            }
-            if (checkAcl == null || checkAcl.check(entity)) {
-              // Remove primary filter and other info if they are added for
-              // matching secondary filters
-              if (addPrimaryFilters) {
-                entity.setPrimaryFilters(null);
+            if (filterPassed) {
+              if (entity.getDomainId() == null) {
+                entity.setDomainId(DEFAULT_DOMAIN_ID);
               }
-              if (addOtherInfo) {
-                entity.setOtherInfo(null);
+              if (checkAcl == null || checkAcl.check(entity)) {
+                // Remove primary filter and other info if they are added for
+                // matching secondary filters
+                if (addPrimaryFilters) {
+                  entity.setPrimaryFilters(null);
+                }
+                if (addOtherInfo) {
+                  entity.setOtherInfo(null);
+                }
+                entities.addEntity(entity);
               }
-              entities.addEntity(entity);
             }
           }
         }
@@ -1163,9 +1175,7 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
 
   @Override
   public TimelinePutResponse put(TimelineEntities entities) {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Starting put");
-    }
+    LOG.debug("Starting put");
     TimelinePutResponse response = new TimelinePutResponse();
     TreeMap<Long, RollingWriteBatch> entityUpdates =
         new TreeMap<Long, RollingWriteBatch>();
@@ -1199,11 +1209,9 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
         indexRollingWriteBatch.close();
       }
     }
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Put " + entityCount + " new leveldb entity entries and "
-          + indexCount + " new leveldb index entries from "
-          + entities.getEntities().size() + " timeline entities");
-    }
+    LOG.debug("Put {} new leveldb entity entries and {} new leveldb index"
+        + " entries from {} timeline entities", entityCount, indexCount,
+        entities.getEntities().size());
     return response;
   }
 
@@ -1521,16 +1529,11 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
 
           // a large delete will hold the lock for too long
           if (batchSize >= writeBatchSize) {
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("Preparing to delete a batch of " + batchSize
-                  + " old start times");
-            }
+            LOG.debug("Preparing to delete a batch of {} old start times",
+                batchSize);
             starttimedb.write(writeBatch);
-            if (LOG.isDebugEnabled()) {
-              LOG.debug("Deleted batch of " + batchSize
-                  + ". Total start times deleted so far this cycle: "
-                  + startTimesCount);
-            }
+            LOG.debug("Deleted batch of {}. Total start times deleted"
+                + " so far this cycle: {}", batchSize, startTimesCount);
             IOUtils.cleanupWithLogger(LOG, writeBatch);
             writeBatch = starttimedb.createWriteBatch();
             batchSize = 0;
@@ -1538,16 +1541,11 @@ public class RollingLevelDBTimelineStore extends AbstractService implements
         }
         ++totalCount;
       }
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Preparing to delete a batch of " + batchSize
-            + " old start times");
-      }
+      LOG.debug("Preparing to delete a batch of {} old start times",
+          batchSize);
       starttimedb.write(writeBatch);
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("Deleted batch of " + batchSize
-            + ". Total start times deleted so far this cycle: "
-            + startTimesCount);
-      }
+      LOG.debug("Deleted batch of {}. Total start times deleted so far"
+          + " this cycle: {}", batchSize, startTimesCount);
       LOG.info("Deleted " + startTimesCount + "/" + totalCount
           + " start time entities earlier than " + minStartTime);
     } finally {

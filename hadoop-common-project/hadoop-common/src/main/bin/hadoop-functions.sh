@@ -585,7 +585,7 @@ function hadoop_bootstrap
 
   #
   # short-cuts. vendors may redefine these as well, preferably
-  # in hadoop-layouts.sh
+  # in hadoop-layout.sh
   #
   HADOOP_COMMON_DIR=${HADOOP_COMMON_DIR:-"share/hadoop/common"}
   HADOOP_COMMON_LIB_JARS_DIR=${HADOOP_COMMON_LIB_JARS_DIR:-"share/hadoop/common/lib"}
@@ -596,6 +596,7 @@ function hadoop_bootstrap
   YARN_LIB_JARS_DIR=${YARN_LIB_JARS_DIR:-"share/hadoop/yarn/lib"}
   MAPRED_DIR=${MAPRED_DIR:-"share/hadoop/mapreduce"}
   MAPRED_LIB_JARS_DIR=${MAPRED_LIB_JARS_DIR:-"share/hadoop/mapreduce/lib"}
+
   HADOOP_TOOLS_HOME=${HADOOP_TOOLS_HOME:-${HADOOP_HOME}}
   HADOOP_TOOLS_DIR=${HADOOP_TOOLS_DIR:-"share/hadoop/tools"}
   HADOOP_TOOLS_LIB_JARS_DIR=${HADOOP_TOOLS_LIB_JARS_DIR:-"${HADOOP_TOOLS_DIR}/lib"}
@@ -1336,7 +1337,7 @@ function hadoop_add_to_classpath_tools
     # shellcheck disable=SC1090
     . "${HADOOP_LIBEXEC_DIR}/tools/${module}.sh"
   else
-    hadoop_error "ERROR: Tools helper ${HADOOP_LIBEXEC_DIR}/tools/${module}.sh was not found."
+    hadoop_debug "Tools helper ${HADOOP_LIBEXEC_DIR}/tools/${module}.sh was not found."
   fi
 
   if declare -f hadoop_classpath_tools_${module} >/dev/null 2>&1; then
@@ -1725,11 +1726,16 @@ function hadoop_status_daemon
   shift
 
   local pid
+  local pspid
 
   if [[ -f "${pidfile}" ]]; then
     pid=$(cat "${pidfile}")
-    if ps -p "${pid}" > /dev/null 2>&1; then
-      return 0
+    if pspid=$(ps -o args= -p"${pid}" 2>/dev/null); then
+      # this is to check that the running process we found is actually the same
+      # daemon that we're interested in
+      if [[ ${pspid} =~ -Dproc_${daemonname} ]]; then
+        return 0
+      fi
     fi
     return 1
   fi
@@ -1910,6 +1916,22 @@ function hadoop_start_secure_daemon
     exit 1
   fi
 
+  if [[ -z "${HADOOP_DAEMON_JSVC_EXTRA_OPTS}" ]]; then
+    # If HADOOP_DAEMON_JSVC_EXTRA_OPTS is not set
+    if ${jsvc} -help | grep -q "\-cwd"; then
+      # Check if jsvc -help has entry for option -cwd
+      hadoop_debug "Your jsvc supports -cwd option." \
+        "Adding option '-cwd .'. See HADOOP-16276 for details."
+      HADOOP_DAEMON_JSVC_EXTRA_OPTS="-cwd ."
+    else
+      hadoop_debug "Your jsvc doesn't support -cwd option." \
+        "No need to add option '-cwd .'. See HADOOP-16276 for details."
+    fi
+  else
+    hadoop_debug "HADOOP_DAEMON_JSVC_EXTRA_OPTS is set." \
+      "Ignoring jsvc -cwd option detection and addition."
+  fi
+
   # note that shellcheck will throw a
   # bogus for-our-use-case 2086 here.
   # it doesn't properly support multi-line situations
@@ -1918,6 +1940,7 @@ function hadoop_start_secure_daemon
   hadoop_debug "Final HADOOP_OPTS: ${HADOOP_OPTS}"
   hadoop_debug "Final JSVC_HOME: ${JSVC_HOME}"
   hadoop_debug "jsvc: ${jsvc}"
+  hadoop_debug "Final HADOOP_DAEMON_JSVC_EXTRA_OPTS: ${HADOOP_DAEMON_JSVC_EXTRA_OPTS}"
   hadoop_debug "Class name: ${class}"
   hadoop_debug "Command line options: $*"
 
@@ -1930,6 +1953,7 @@ function hadoop_start_secure_daemon
   # shellcheck disable=SC2086
   exec "${jsvc}" \
     "-Dproc_${daemonname}" \
+    ${HADOOP_DAEMON_JSVC_EXTRA_OPTS} \
     -outfile "${daemonoutfile}" \
     -errfile "${daemonerrfile}" \
     -pidfile "${daemonpidfile}" \
@@ -2181,7 +2205,7 @@ function hadoop_daemon_handler
       hadoop_verify_logdir
       hadoop_status_daemon "${daemon_pidfile}"
       if [[ $? == 0  ]]; then
-        hadoop_error "${daemonname} is running as process $(cat "${daemon_pidfile}").  Stop it first."
+        hadoop_error "${daemonname} is running as process $(cat "${daemon_pidfile}").  Stop it first and ensure ${daemon_pidfile} file is empty before retry."
         exit 1
       else
         # stale pid file, so just remove it and continue on
@@ -2242,7 +2266,7 @@ function hadoop_secure_daemon_handler
       hadoop_verify_logdir
       hadoop_status_daemon "${daemon_pidfile}"
       if [[ $? == 0  ]]; then
-        hadoop_error "${daemonname} is running as process $(cat "${daemon_pidfile}").  Stop it first."
+        hadoop_error "${daemonname} is running as process $(cat "${daemon_pidfile}").  Stop it first and ensure ${daemon_pidfile} file is empty before retry."
         exit 1
       else
         # stale pid file, so just remove it and continue on
@@ -2519,7 +2543,7 @@ function hadoop_do_classpath_subcommand
   fi
 }
 
-## @description  generic shell script opton parser.  sets
+## @description  generic shell script option parser.  sets
 ## @description  HADOOP_PARSE_COUNTER to set number the
 ## @description  caller should shift
 ## @audience     private

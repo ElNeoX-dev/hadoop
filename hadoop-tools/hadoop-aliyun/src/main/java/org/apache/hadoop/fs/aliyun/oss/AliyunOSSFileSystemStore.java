@@ -31,12 +31,13 @@ import com.aliyun.oss.model.CompleteMultipartUploadResult;
 import com.aliyun.oss.model.CopyObjectResult;
 import com.aliyun.oss.model.DeleteObjectsRequest;
 import com.aliyun.oss.model.DeleteObjectsResult;
+import com.aliyun.oss.model.GenericRequest;
 import com.aliyun.oss.model.GetObjectRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadRequest;
 import com.aliyun.oss.model.InitiateMultipartUploadResult;
 import com.aliyun.oss.model.ListObjectsRequest;
+import com.aliyun.oss.model.ListObjectsV2Request;
 import com.aliyun.oss.model.ObjectMetadata;
-import com.aliyun.oss.model.ObjectListing;
 import com.aliyun.oss.model.OSSObjectSummary;
 import com.aliyun.oss.model.PartETag;
 import com.aliyun.oss.model.PutObjectResult;
@@ -45,7 +46,7 @@ import com.aliyun.oss.model.UploadPartCopyResult;
 import com.aliyun.oss.model.UploadPartRequest;
 import com.aliyun.oss.model.UploadPartResult;
 import org.apache.commons.collections.CollectionUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileStatus;
@@ -82,16 +83,18 @@ import static org.apache.hadoop.fs.aliyun.oss.Constants.*;
 public class AliyunOSSFileSystemStore {
   public static final Logger LOG =
       LoggerFactory.getLogger(AliyunOSSFileSystemStore.class);
+  private String username;
   private FileSystem.Statistics statistics;
   private OSSClient ossClient;
   private String bucketName;
   private long uploadPartSize;
-  private long multipartThreshold;
   private int maxKeys;
   private String serverSideEncryptionAlgorithm;
+  private boolean useListV1;
 
-  public void initialize(URI uri, Configuration conf,
+  public void initialize(URI uri, Configuration conf, String user,
                          FileSystem.Statistics stat) throws IOException {
+    this.username = user;
     statistics = stat;
     ClientConfiguration clientConf = new ClientConfiguration();
     clientConf.setMaxConnections(conf.getInt(MAXIMUM_CONNECTIONS_KEY,
@@ -149,34 +152,31 @@ public class AliyunOSSFileSystemStore {
           "null or empty. Please set proper endpoint with 'fs.oss.endpoint'.");
     }
     CredentialsProvider provider =
-        AliyunOSSUtils.getCredentialsProvider(conf);
+        AliyunOSSUtils.getCredentialsProvider(uri, conf);
     ossClient = new OSSClient(endPoint, provider, clientConf);
     uploadPartSize = AliyunOSSUtils.getMultipartSizeProperty(conf,
         MULTIPART_UPLOAD_PART_SIZE_KEY, MULTIPART_UPLOAD_PART_SIZE_DEFAULT);
-    multipartThreshold = conf.getLong(MIN_MULTIPART_UPLOAD_THRESHOLD_KEY,
-        MIN_MULTIPART_UPLOAD_THRESHOLD_DEFAULT);
+
     serverSideEncryptionAlgorithm =
         conf.get(SERVER_SIDE_ENCRYPTION_ALGORITHM_KEY, "");
 
-    if (multipartThreshold < 5 * 1024 * 1024) {
-      LOG.warn(MIN_MULTIPART_UPLOAD_THRESHOLD_KEY + " must be at least 5 MB");
-      multipartThreshold = 5 * 1024 * 1024;
-    }
-
-    if (multipartThreshold > 1024 * 1024 * 1024) {
-      LOG.warn(MIN_MULTIPART_UPLOAD_THRESHOLD_KEY + " must be less than 1 GB");
-      multipartThreshold = 1024 * 1024 * 1024;
-    }
+    bucketName = uri.getHost();
 
     String cannedACLName = conf.get(CANNED_ACL_KEY, CANNED_ACL_DEFAULT);
     if (StringUtils.isNotEmpty(cannedACLName)) {
       CannedAccessControlList cannedACL =
           CannedAccessControlList.valueOf(cannedACLName);
       ossClient.setBucketAcl(bucketName, cannedACL);
+      statistics.incrementWriteOps(1);
     }
 
     maxKeys = conf.getInt(MAX_PAGING_KEYS_KEY, MAX_PAGING_KEYS_DEFAULT);
-    bucketName = uri.getHost();
+    int listVersion = conf.getInt(LIST_VERSION, DEFAULT_LIST_VERSION);
+    if (listVersion < 1 || listVersion > 2) {
+      LOG.warn("Configured fs.oss.list.version {} is invalid, forcing " +
+          "version 2", listVersion);
+    }
+    useListV1 = (listVersion == 1);
   }
 
   /**
@@ -215,6 +215,7 @@ public class AliyunOSSFileSystemStore {
       // Here, we choose the simple mode to do batch delete.
       deleteRequest.setQuiet(true);
       DeleteObjectsResult result = ossClient.deleteObjects(deleteRequest);
+      statistics.incrementWriteOps(1);
       deleteFailed = result.getDeletedObjects();
       tries++;
       if (tries == retry) {
@@ -237,14 +238,10 @@ public class AliyunOSSFileSystemStore {
    * @throws IOException if failed to delete directory.
    */
   public void deleteDirs(String key) throws IOException {
-    key = AliyunOSSUtils.maybeAddTrailingSlash(key);
-    ListObjectsRequest listRequest = new ListObjectsRequest(bucketName);
-    listRequest.setPrefix(key);
-    listRequest.setDelimiter(null);
-    listRequest.setMaxKeys(maxKeys);
-
+    OSSListRequest listRequest = createListObjectsRequest(key,
+        maxKeys, null, null, true);
     while (true) {
-      ObjectListing objects = ossClient.listObjects(listRequest);
+      OSSListResult objects = listObjects(listRequest);
       statistics.incrementReadOps(1);
       List<String> keysToDelete = new ArrayList<String>();
       for (OSSObjectSummary objectSummary : objects.getObjectSummaries()) {
@@ -252,7 +249,12 @@ public class AliyunOSSFileSystemStore {
       }
       deleteObjects(keysToDelete);
       if (objects.isTruncated()) {
-        listRequest.setMarker(objects.getNextMarker());
+        if (objects.isV1()) {
+          listRequest.getV1().setMarker(objects.getV1().getNextMarker());
+        } else {
+          listRequest.getV2().setContinuationToken(
+              objects.getV2().getNextContinuationToken());
+        }
       } else {
         break;
       }
@@ -267,11 +269,15 @@ public class AliyunOSSFileSystemStore {
    */
   public ObjectMetadata getObjectMetadata(String key) {
     try {
-      return ossClient.getObjectMetadata(bucketName, key);
-    } catch (OSSException osse) {
-      return null;
-    } finally {
+      GenericRequest request = new GenericRequest(bucketName, key);
+      request.setLogEnabled(false);
+      ObjectMetadata objectMeta = ossClient.getObjectMetadata(request);
       statistics.incrementReadOps(1);
+      return objectMeta;
+    } catch (OSSException osse) {
+      LOG.debug("Exception thrown when get object meta: "
+              + key + ", exception: " + osse);
+      return null;
     }
   }
 
@@ -288,6 +294,7 @@ public class AliyunOSSFileSystemStore {
     dirMeta.setContentLength(0);
     try {
       ossClient.putObject(bucketName, key, in, dirMeta);
+      statistics.incrementWriteOps(1);
     } finally {
       in.close();
     }
@@ -297,17 +304,19 @@ public class AliyunOSSFileSystemStore {
    * Copy an object from source key to destination key.
    *
    * @param srcKey source key.
+   * @param srcLen source file length.
    * @param dstKey destination key.
    * @return true if file is successfully copied.
    */
-  public boolean copyFile(String srcKey, String dstKey) {
-    ObjectMetadata objectMeta =
-        ossClient.getObjectMetadata(bucketName, srcKey);
-    long contentLength = objectMeta.getContentLength();
-    if (contentLength <= multipartThreshold) {
+  public boolean copyFile(String srcKey, long srcLen, String dstKey) {
+    try {
+      //1, try single copy first
       return singleCopy(srcKey, dstKey);
-    } else {
-      return multipartCopy(srcKey, contentLength, dstKey);
+    } catch (Exception e) {
+      //2, if failed(shallow copy not supported), then multi part copy
+      LOG.debug("Exception thrown when copy file: " + srcKey
+          + ", exception: " + e + ", use multipartCopy instead");
+      return multipartCopy(srcKey, srcLen, dstKey);
     }
   }
 
@@ -322,6 +331,7 @@ public class AliyunOSSFileSystemStore {
   private boolean singleCopy(String srcKey, String dstKey) {
     CopyObjectResult copyResult =
         ossClient.copyObject(bucketName, srcKey, bucketName, dstKey);
+    statistics.incrementWriteOps(1);
     LOG.debug(copyResult.getETag());
     return true;
   }
@@ -371,6 +381,7 @@ public class AliyunOSSFileSystemStore {
         UploadPartCopyResult partCopyResult =
             ossClient.uploadPartCopy(partCopyRequest);
         statistics.incrementWriteOps(1);
+        statistics.incrementBytesWritten(size);
         partETags.add(partCopyResult.getPartETag());
       }
       CompleteMultipartUploadRequest completeMultipartUploadRequest =
@@ -415,25 +426,76 @@ public class AliyunOSSFileSystemStore {
   /**
    * list objects.
    *
+   * @param listRequest list request.
+   * @return a list of matches.
+   */
+  public OSSListResult listObjects(OSSListRequest listRequest) {
+    OSSListResult listResult;
+    if (listRequest.isV1()) {
+      listResult = OSSListResult.v1(
+          ossClient.listObjects(listRequest.getV1()));
+    } else {
+      listResult = OSSListResult.v2(
+          ossClient.listObjectsV2(listRequest.getV2()));
+    }
+    statistics.incrementReadOps(1);
+    return listResult;
+  }
+
+  /**
+   * continue to list objects depends on previous list result.
+   *
+   * @param listRequest list request.
+   * @param preListResult previous list result.
+   * @return a list of matches.
+   */
+  public OSSListResult continueListObjects(OSSListRequest listRequest,
+      OSSListResult preListResult) {
+    OSSListResult listResult;
+    if (listRequest.isV1()) {
+      listRequest.getV1().setMarker(preListResult.getV1().getNextMarker());
+      listResult = OSSListResult.v1(
+          ossClient.listObjects(listRequest.getV1()));
+    } else {
+      listRequest.getV2().setContinuationToken(
+          preListResult.getV2().getNextContinuationToken());
+      listResult = OSSListResult.v2(
+          ossClient.listObjectsV2(listRequest.getV2()));
+    }
+    statistics.incrementReadOps(1);
+    return listResult;
+  }
+
+  /**
+   * create list objects request.
+   *
    * @param prefix prefix.
    * @param maxListingLength max no. of entries
    * @param marker last key in any previous search.
+   * @param continuationToken list from a specific point.
    * @param recursive whether to list directory recursively.
    * @return a list of matches.
    */
-  public ObjectListing listObjects(String prefix, int maxListingLength,
-      String marker, boolean recursive) {
+  protected OSSListRequest createListObjectsRequest(String prefix,
+      int maxListingLength, String marker,
+      String continuationToken, boolean recursive) {
     String delimiter = recursive ? null : "/";
     prefix = AliyunOSSUtils.maybeAddTrailingSlash(prefix);
-    ListObjectsRequest listRequest = new ListObjectsRequest(bucketName);
-    listRequest.setPrefix(prefix);
-    listRequest.setDelimiter(delimiter);
-    listRequest.setMaxKeys(maxListingLength);
-    listRequest.setMarker(marker);
-
-    ObjectListing listing = ossClient.listObjects(listRequest);
-    statistics.incrementReadOps(1);
-    return listing;
+    if (useListV1) {
+      ListObjectsRequest listRequest = new ListObjectsRequest(bucketName);
+      listRequest.setPrefix(prefix);
+      listRequest.setDelimiter(delimiter);
+      listRequest.setMaxKeys(maxListingLength);
+      listRequest.setMarker(marker);
+      return OSSListRequest.v1(listRequest);
+    } else {
+      ListObjectsV2Request listV2Request = new ListObjectsV2Request(bucketName);
+      listV2Request.setPrefix(prefix);
+      listV2Request.setDelimiter(delimiter);
+      listV2Request.setMaxKeys(maxListingLength);
+      listV2Request.setContinuationToken(continuationToken);
+      return OSSListRequest.v2(listV2Request);
+    }
   }
 
   /**
@@ -448,8 +510,12 @@ public class AliyunOSSFileSystemStore {
     try {
       GetObjectRequest request = new GetObjectRequest(bucketName, key);
       request.setRange(byteStart, byteEnd);
-      return ossClient.getObject(request).getObjectContent();
+      InputStream in = ossClient.getObject(request).getObjectContent();
+      statistics.incrementReadOps(1);
+      return in;
     } catch (OSSException | ClientException e) {
+      LOG.error("Exception thrown when store retrieves key: "
+              + key + ", exception: " + e);
       return null;
     }
   }
@@ -471,20 +537,7 @@ public class AliyunOSSFileSystemStore {
    * @throws IOException if failed to clean up objects.
    */
   public void purge(String prefix) throws IOException {
-    String key;
-    try {
-      ObjectListing objects = listObjects(prefix, maxKeys, null, true);
-      for (OSSObjectSummary object : objects.getObjectSummaries()) {
-        key = object.getKey();
-        ossClient.deleteObject(bucketName, key);
-      }
-
-      for (String dir: objects.getCommonPrefixes()) {
-        deleteDirs(dir);
-      }
-    } catch (OSSException | ClientException e) {
-      LOG.error("Failed to purge " + prefix);
-    }
+    deleteDirs(prefix);
   }
 
   public RemoteIterator<LocatedFileStatus> singleStatusRemoteIterator(
@@ -512,12 +565,12 @@ public class AliyunOSSFileSystemStore {
 
   public RemoteIterator<LocatedFileStatus> createLocatedFileStatusIterator(
       final String prefix, final int maxListingLength, FileSystem fs,
-      PathFilter filter, FileStatusAcceptor acceptor, String delimiter) {
+      PathFilter filter, FileStatusAcceptor acceptor, boolean recursive) {
     return new RemoteIterator<LocatedFileStatus>() {
-      private String nextMarker = null;
       private boolean firstListing = true;
       private boolean meetEnd = false;
       private ListIterator<FileStatus> batchIterator;
+      private OSSListRequest listRequest = null;
 
       @Override
       public boolean hasNext() throws IOException {
@@ -542,15 +595,24 @@ public class AliyunOSSFileSystemStore {
       }
 
       private boolean requestNextBatch() {
+        while (!meetEnd) {
+          if (continueListStatus()) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      private boolean continueListStatus() {
         if (meetEnd) {
           return false;
         }
-        ListObjectsRequest listRequest = new ListObjectsRequest(bucketName);
-        listRequest.setPrefix(AliyunOSSUtils.maybeAddTrailingSlash(prefix));
-        listRequest.setMaxKeys(maxListingLength);
-        listRequest.setMarker(nextMarker);
-        listRequest.setDelimiter(delimiter);
-        ObjectListing listing = ossClient.listObjects(listRequest);
+        if (listRequest == null) {
+          listRequest = createListObjectsRequest(prefix,
+              maxListingLength, null, null, recursive);
+        }
+        OSSListResult listing = listObjects(listRequest);
         List<FileStatus> stats = new ArrayList<>(
             listing.getObjectSummaries().size() +
             listing.getCommonPrefixes().size());
@@ -558,9 +620,9 @@ public class AliyunOSSFileSystemStore {
           String key = summary.getKey();
           Path path = fs.makeQualified(new Path("/" + key));
           if (filter.accept(path) && acceptor.accept(path, summary)) {
-            FileStatus status = new FileStatus(summary.getSize(),
+            FileStatus status = new OSSFileStatus(summary.getSize(),
                 key.endsWith("/"), 1, fs.getDefaultBlockSize(path),
-                summary.getLastModified().getTime(), path);
+                summary.getLastModified().getTime(), path, username);
             stats.add(status);
           }
         }
@@ -568,14 +630,20 @@ public class AliyunOSSFileSystemStore {
         for (String commonPrefix : listing.getCommonPrefixes()) {
           Path path = fs.makeQualified(new Path("/" + commonPrefix));
           if (filter.accept(path) && acceptor.accept(path, commonPrefix)) {
-            FileStatus status = new FileStatus(0, true, 1, 0, 0, path);
+            FileStatus status = new OSSFileStatus(0, true, 1, 0, 0,
+                path, username);
             stats.add(status);
           }
         }
 
         batchIterator = stats.listIterator();
         if (listing.isTruncated()) {
-          nextMarker = listing.getNextMarker();
+          if (listing.isV1()) {
+            listRequest.getV1().setMarker(listing.getV1().getNextMarker());
+          } else {
+            listRequest.getV2().setContinuationToken(
+                listing.getV2().getNextContinuationToken());
+          }
         } else {
           meetEnd = true;
         }
@@ -601,6 +669,7 @@ public class AliyunOSSFileSystemStore {
         uploadRequest.setPartSize(file.length());
         uploadRequest.setPartNumber(idx);
         UploadPartResult uploadResult = ossClient.uploadPart(uploadRequest);
+        statistics.incrementWriteOps(1);
         return uploadResult.getPartETag();
       } catch (Exception e) {
         LOG.debug("Failed to upload "+ file.getPath() +", " +

@@ -47,6 +47,7 @@ import org.apache.hadoop.hdfs.server.federation.store.protocol.NamenodeHeartbeat
 import org.apache.hadoop.hdfs.server.federation.store.protocol.UpdateNamenodeRegistrationRequest;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipState;
 import org.apache.hadoop.hdfs.server.federation.store.records.MembershipStats;
+import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -122,9 +123,13 @@ public class MembershipNamenodeResolver
     // Our cache depends on the store, update it first
     try {
       MembershipStore membership = getMembershipStore();
-      membership.loadCache(force);
+      if (!membership.loadCache(force)) {
+        return false;
+      }
       DisabledNameserviceStore disabled = getDisabledNameserviceStore();
-      disabled.loadCache(force);
+      if (!disabled.loadCache(force)) {
+        return false;
+      }
     } catch (IOException e) {
       LOG.error("Cannot update membership from the State Store", e);
     }
@@ -161,6 +166,11 @@ public class MembershipNamenodeResolver
             UpdateNamenodeRegistrationRequest.newInstance(
                 record.getNameserviceId(), record.getNamenodeId(), ACTIVE);
         membership.updateNamenodeRegistration(updateRequest);
+
+        cacheNS.remove(nsId);
+        // Invalidating the full cacheBp since getting the blockpool id from
+        // namespace id is quite costly.
+        cacheBP.clear();
       }
     } catch (StateStoreUnavailableException e) {
       LOG.error("Cannot update {} as active, State Store unavailable", address);
@@ -258,9 +268,11 @@ public class MembershipNamenodeResolver
 
     MembershipState record = MembershipState.newInstance(
         routerId, report.getNameserviceId(), report.getNamenodeId(),
-        report.getClusterId(), report.getBlockPoolId(), report.getRpcAddress(),
+        report.getClusterId(), report.getBlockPoolId(),
+        NetUtils.normalizeIP2HostName(report.getRpcAddress()),
         report.getServiceAddress(), report.getLifelineAddress(),
-        report.getWebAddress(), report.getState(), report.getSafemode());
+        report.getWebScheme(), report.getWebAddress(), report.getState(),
+        report.getSafemode());
 
     if (report.statsValid()) {
       MembershipStats stats = MembershipStats.newInstance();
@@ -280,8 +292,15 @@ public class MembershipNamenodeResolver
           report.getNumDecommissioningDatanodes());
       stats.setNumOfActiveDatanodes(report.getNumLiveDatanodes());
       stats.setNumOfDeadDatanodes(report.getNumDeadDatanodes());
+      stats.setNumOfStaleDatanodes(report.getNumStaleDatanodes());
       stats.setNumOfDecomActiveDatanodes(report.getNumDecomLiveDatanodes());
       stats.setNumOfDecomDeadDatanodes(report.getNumDecomDeadDatanodes());
+      stats.setNumOfInMaintenanceLiveDataNodes(
+          report.getNumInMaintenanceLiveDataNodes());
+      stats.setNumOfInMaintenanceDeadDataNodes(
+          report.getNumInMaintenanceDeadDataNodes());
+      stats.setNumOfEnteringMaintenanceDataNodes(
+          report.getNumEnteringMaintenanceDataNodes());
       record.setStats(stats);
     }
 

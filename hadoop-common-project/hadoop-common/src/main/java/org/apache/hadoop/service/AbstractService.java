@@ -29,7 +29,7 @@ import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.conf.Configuration;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -240,7 +240,7 @@ public abstract class AbstractService implements Service {
 
   /**
    * Relay to {@link #stop()}
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   @Override
   public final void close() throws IOException {
@@ -254,7 +254,7 @@ public abstract class AbstractService implements Service {
    * @param exception the exception
    */
   protected final void noteFailure(Exception exception) {
-    LOG.debug("noteFailure {}" + exception);
+    LOG.debug("noteFailure", exception);
     if (exception == null) {
       //make sure failure logic doesn't itself cause problems
       return;
@@ -306,7 +306,7 @@ public abstract class AbstractService implements Service {
    * a new configuration instance, and if so, updates the base class value
    * @param conf configuration
    * @throws Exception on a failure -these will be caught,
-   * possibly wrapped, and wil; trigger a service stop
+   * possibly wrapped, and will trigger a service stop
    */
   protected void serviceInit(Configuration conf) throws Exception {
     if (conf != config) {

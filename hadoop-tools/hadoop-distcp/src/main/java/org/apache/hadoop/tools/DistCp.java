@@ -21,9 +21,9 @@ package org.apache.hadoop.tools;
 import java.io.IOException;
 import java.util.Random;
 
-import com.google.common.base.Preconditions;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -44,7 +44,7 @@ import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * DistCp is the main driver-class for DistCpV2.
@@ -64,7 +64,7 @@ public class DistCp extends Configured implements Tool {
    */
   static final int SHUTDOWN_HOOK_PRIORITY = 30;
 
-  static final Log LOG = LogFactory.getLog(DistCp.class);
+  static final Logger LOG = LoggerFactory.getLogger(DistCp.class);
 
   @VisibleForTesting
   DistCpContext context;
@@ -84,7 +84,7 @@ public class DistCp extends Configured implements Tool {
     if (context.shouldUseSnapshotDiff()) {
       // When "-diff" or "-rdiff" is passed, do sync() first, then
       // create copyListing based on snapshot diff.
-      DistCpSync distCpSync = new DistCpSync(context, getConf());
+      DistCpSync distCpSync = new DistCpSync(context, job.getConfiguration());
       if (distCpSync.sync()) {
         createInputFileListingWithDiff(job, distCpSync);
       } else {
@@ -214,6 +214,8 @@ public class DistCp extends Configured implements Tool {
     String jobID = job.getJobID().toString();
     job.getConfiguration().set(DistCpConstants.CONF_LABEL_DISTCP_JOB_ID,
         jobID);
+    // Set the jobId for the applications running through run method.
+    getConf().set(DistCpConstants.CONF_LABEL_DISTCP_JOB_ID, jobID);
     LOG.info("DistCp job-id: " + jobID);
 
     return job;
@@ -414,6 +416,15 @@ public class DistCp extends Configured implements Tool {
       LOG.debug("Meta folder location: " + metaFolderPath);
     configuration.set(DistCpConstants.CONF_LABEL_META_FOLDER, metaFolderPath.toString());    
     return metaFolderPath;
+  }
+
+  /**
+   * Returns the context.
+   *
+   * @return the context
+   */
+  protected DistCpContext getContext() {
+    return context;
   }
 
   /**

@@ -24,8 +24,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.hadoop.util.*;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
@@ -78,11 +76,26 @@ public class LocalDirAllocator {
   /** Used when size of file to be allocated is unknown. */
   public static final int SIZE_UNKNOWN = -1;
 
-  /**Create an allocator object
-   * @param contextCfgItemName
+  private final DiskValidator diskValidator;
+
+  /**
+   * Create an allocator object.
+   * @param contextCfgItemName contextCfgItemName.
    */
   public LocalDirAllocator(String contextCfgItemName) {
     this.contextCfgItemName = contextCfgItemName;
+    try {
+      this.diskValidator = DiskValidatorFactory.getInstance(
+              BasicDiskValidator.NAME);
+    } catch (DiskErrorException e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  public LocalDirAllocator(String contextCfgItemName,
+          DiskValidator diskValidator) {
+    this.contextCfgItemName = contextCfgItemName;
+    this.diskValidator = diskValidator;
   }
   
   /** This method must be used to obtain the dir allocation context for a 
@@ -96,7 +109,8 @@ public class LocalDirAllocator {
       AllocatorPerContext l = contexts.get(contextCfgItemName);
       if (l == null) {
         contexts.put(contextCfgItemName, 
-                    (l = new AllocatorPerContext(contextCfgItemName)));
+                    (l = new AllocatorPerContext(contextCfgItemName,
+                            diskValidator)));
       }
       return l;
     }
@@ -110,7 +124,7 @@ public class LocalDirAllocator {
    *  available disk)
    *  @param conf the Configuration object
    *  @return the complete path to the file on a local disk
-   *  @throws IOException
+   *  @throws IOException raised on errors performing I/O.
    */
   public Path getLocalPathForWrite(String pathStr, 
       Configuration conf) throws IOException {
@@ -126,7 +140,7 @@ public class LocalDirAllocator {
    *  @param size the size of the file that is going to be written
    *  @param conf the Configuration object
    *  @return the complete path to the file on a local disk
-   *  @throws IOException
+   *  @throws IOException raised on errors performing I/O.
    */
   public Path getLocalPathForWrite(String pathStr, long size, 
       Configuration conf) throws IOException {
@@ -143,7 +157,7 @@ public class LocalDirAllocator {
    *  @param conf the Configuration object
    *  @param checkWrite ensure that the path is writable
    *  @return the complete path to the file on a local disk
-   *  @throws IOException
+   *  @throws IOException raised on errors performing I/O.
    */
   public Path getLocalPathForWrite(String pathStr, long size, 
                                    Configuration conf,
@@ -158,7 +172,7 @@ public class LocalDirAllocator {
    *  @param pathStr the requested file (this will be searched)
    *  @param conf the Configuration object
    *  @return the complete path to the file on a local disk
-   *  @throws IOException
+   *  @throws IOException raised on errors performing I/O.
    */
   public Path getLocalPathToRead(String pathStr, 
       Configuration conf) throws IOException {
@@ -171,7 +185,7 @@ public class LocalDirAllocator {
    * @param pathStr the path underneath the roots
    * @param conf the configuration to look up the roots in
    * @return all of the paths that exist under any of the roots
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public Iterable<Path> getAllLocalPathsToRead(String pathStr, 
                                                Configuration conf
@@ -192,7 +206,7 @@ public class LocalDirAllocator {
    *  @param size the size of the file that is going to be written
    *  @param conf the Configuration object
    *  @return a unique temporary file
-   *  @throws IOException
+   *  @throws IOException raised on errors performing I/O.
    */
   public File createTmpFileForWrite(String pathStr, long size, 
       Configuration conf) throws IOException {
@@ -200,8 +214,9 @@ public class LocalDirAllocator {
     return context.createTmpFileForWrite(pathStr, size, conf);
   }
   
-  /** Method to check whether a context is valid
-   * @param contextCfgItemName
+  /**
+   * Method to check whether a context is valid.
+   * @param contextCfgItemName contextCfgItemName.
    * @return true/false
    */
   public static boolean isContextValid(String contextCfgItemName) {
@@ -211,9 +226,9 @@ public class LocalDirAllocator {
   }
   
   /**
-   * Removes the context from the context config items
+   * Removes the context from the context config items.
    * 
-   * @param contextCfgItemName
+   * @param contextCfgItemName contextCfgItemName.
    */
   @Deprecated
   @InterfaceAudience.LimitedPrivate({"MapReduce"})
@@ -223,14 +238,14 @@ public class LocalDirAllocator {
     }
   }
     
-  /** We search through all the configured dirs for the file's existence
-   *  and return true when we find  
+  /**
+   *  We search through all the configured dirs for the file's existence
+   *  and return true when we find.
    *  @param pathStr the requested file (this will be searched)
    *  @param conf the Configuration object
    *  @return true if files exist. false otherwise
-   *  @throws IOException
    */
-  public boolean ifExists(String pathStr,Configuration conf) {
+  public boolean ifExists(String pathStr, Configuration conf) {
     AllocatorPerContext context = obtainContext(contextCfgItemName);
     return context.ifExists(pathStr, conf);
   }
@@ -255,6 +270,7 @@ public class LocalDirAllocator {
     // NOTE: the context must be accessed via a local reference as it
     //       may be updated at any time to reference a different context
     private AtomicReference<Context> currentContext;
+    private final DiskValidator diskValidator;
 
     private static class Context {
       private AtomicInteger dirNumLastAccessed = new AtomicInteger(0);
@@ -280,9 +296,11 @@ public class LocalDirAllocator {
       }
     }
 
-    public AllocatorPerContext(String contextCfgItemName) {
+    public AllocatorPerContext(String contextCfgItemName,
+            DiskValidator diskValidator) {
       this.contextCfgItemName = contextCfgItemName;
       this.currentContext = new AtomicReference<Context>(new Context());
+      this.diskValidator = diskValidator;
     }
 
     /** This method gets called everytime before any read/write to make sure
@@ -312,7 +330,7 @@ public class LocalDirAllocator {
                     ? new File(ctx.localFS.makeQualified(tmpDir).toUri())
                     : new File(dirStrings[i]);
 
-                DiskChecker.checkDir(tmpFile);
+                diskValidator.checkStatus(tmpFile);
                 dirs.add(new Path(tmpFile.getPath()));
                 dfList.add(new DF(tmpFile, 30000));
               } catch (DiskErrorException de) {
@@ -348,7 +366,7 @@ public class LocalDirAllocator {
         //check whether we are able to create a directory here. If the disk
         //happens to be RDONLY we will fail
         try {
-          DiskChecker.checkDir(new File(file.getParent().toUri().getPath()));
+          diskValidator.checkStatus(new File(file.getParent().toUri().getPath()));
           return file;
         } catch (DiskErrorException d) {
           LOG.warn("Disk Error Exception: ", d);
@@ -378,6 +396,10 @@ public class LocalDirAllocator {
       Context ctx = confChanged(conf);
       int numDirs = ctx.localDirs.length;
       int numDirsSearched = 0;
+      // Max capacity in any directory
+      long maxCapacity = 0;
+      String errorText = null;
+      IOException diskException = null;
       //remove the leading slash from the path (to make sure that the uri
       //resolution results in a valid path on the dir being checked)
       if (pathStr.startsWith("/")) {
@@ -392,7 +414,14 @@ public class LocalDirAllocator {
         
             //build the "roulette wheel"
         for(int i =0; i < ctx.dirDF.length; ++i) {
-          availableOnDisk[i] = ctx.dirDF[i].getAvailable();
+          final DF target = ctx.dirDF[i];
+          // attempt to recreate the dir so that getAvailable() is valid
+          // if it fails, getAvailable() will return 0, so the dir will
+          // be declared unavailable.
+          // return value is logged at debug to keep spotbugs quiet.
+          final boolean b = new File(target.getDirPath()).mkdirs();
+          LOG.debug("mkdirs of {}={}", target, b);
+          availableOnDisk[i] = target.getAvailable();
           totalAvailable += availableOnDisk[i];
         }
 
@@ -426,9 +455,18 @@ public class LocalDirAllocator {
         int dirNum = ctx.getAndIncrDirNumLastAccessed(randomInc);
         while (numDirsSearched < numDirs) {
           long capacity = ctx.dirDF[dirNum].getAvailable();
+          if (capacity > maxCapacity) {
+            maxCapacity = capacity;
+          }
           if (capacity > size) {
-            returnPath =
-                createPath(ctx.localDirs[dirNum], pathStr, checkWrite);
+            try {
+              returnPath = createPath(ctx.localDirs[dirNum], pathStr,
+                  checkWrite);
+            } catch (IOException e) {
+              errorText = e.getMessage();
+              diskException = e;
+              LOG.debug("DiskException caught for dir {}", ctx.localDirs[dirNum], e);
+            }
             if (returnPath != null) {
               ctx.getAndIncrDirNumLastAccessed(numDirsSearched);
               break;
@@ -444,8 +482,13 @@ public class LocalDirAllocator {
       }
       
       //no path found
-      throw new DiskErrorException("Could not find any valid local " +
-          "directory for " + pathStr);
+      String newErrorText = "Could not find any valid local directory for " +
+          pathStr + " with requested size " + size +
+          " as the max capacity in any directory is " + maxCapacity;
+      if (errorText != null) {
+        newErrorText = newErrorText + " due to " + errorText;
+      }
+      throw new DiskErrorException(newErrorText, diskException);
     }
 
     /** Creates a file on the local FS. Pass size as 

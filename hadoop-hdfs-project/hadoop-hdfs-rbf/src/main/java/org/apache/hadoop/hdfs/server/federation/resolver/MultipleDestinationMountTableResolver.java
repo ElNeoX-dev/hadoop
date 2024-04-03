@@ -32,7 +32,7 @@ import org.apache.hadoop.hdfs.server.federation.router.Router;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * Mount table resolver that supports multiple locations for each mount entry.
@@ -44,8 +44,8 @@ import com.google.common.annotations.VisibleForTesting;
  * <p>
  * Does the Mount table entry for this path have multiple destinations?
  * <ul>
- * <li>No -> Return the location
- * <li>Yes -> Return all locations, prioritizing the best guess from the
+ * <li>No: Return the location
+ * <li>Yes: Return all locations, prioritizing the best guess from the
  * consistent hashing algorithm.
  * </ul>
  * <p>

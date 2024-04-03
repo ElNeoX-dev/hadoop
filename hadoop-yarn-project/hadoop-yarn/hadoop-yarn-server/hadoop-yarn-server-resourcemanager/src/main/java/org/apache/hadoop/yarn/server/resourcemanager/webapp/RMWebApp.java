@@ -22,8 +22,8 @@ import static org.apache.hadoop.yarn.util.StringHelper.pajoin;
 
 import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.ha.HAServiceProtocol.HAServiceState;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.util.RMHAUtils;
@@ -40,8 +40,8 @@ import com.sun.jersey.guice.spi.container.servlet.GuiceContainer;
  */
 public class RMWebApp extends WebApp implements YarnWebParams {
 
-  private static final Log LOG =
-      LogFactory.getLog(RMWebApp.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RMWebApp.class.getName());
   private final ResourceManager rm;
   private boolean standby = false;
 
@@ -55,6 +55,7 @@ public class RMWebApp extends WebApp implements YarnWebParams {
     bind(RMWebServices.class);
     bind(GenericExceptionHandler.class);
     bind(RMWebApp.class).toInstance(this);
+    bindExternalClasses();
 
     if (rm != null) {
       bind(ResourceManager.class).toInstance(rm);
@@ -96,6 +97,16 @@ public class RMWebApp extends WebApp implements YarnWebParams {
     } else
       return super.getRedirectPath();
   }
+
+  private void bindExternalClasses() {
+    YarnConfiguration yarnConf = new YarnConfiguration(rm.getConfig());
+    Class<?>[] externalClasses = yarnConf
+        .getClasses(YarnConfiguration.YARN_HTTP_WEBAPP_EXTERNAL_CLASSES);
+    for (Class<?> c : externalClasses) {
+      bind(c);
+    }
+  }
+
 
   private String buildRedirectPath() {
     // make a copy of the original configuration so not to mutate it. Also use

@@ -85,6 +85,12 @@ public class NameNodeMetrics {
   MutableGaugeInt blockOpsQueued;
   @Metric("Number of blockReports and blockReceivedAndDeleted batch processed")
   MutableCounterLong blockOpsBatched;
+  @Metric("Number of pending edits")
+  MutableGaugeInt pendingEditsCount;
+  @Metric("Number of delete blocks Queued")
+  MutableGaugeInt deleteBlocksQueued;
+  @Metric("Number of pending deletion blocks")
+  MutableGaugeInt pendingDeleteBlocksCount;
 
   @Metric("Number of file system operations")
   public long totalFileOps(){
@@ -151,6 +157,8 @@ public class NameNodeMetrics {
   MutableRate getEdit;
   @Metric("GetImageServlet getImage")
   MutableRate getImage;
+  @Metric("GetImageServlet getAliasMap")
+  MutableRate getAliasMap;
   @Metric("GetImageServlet putImage")
   MutableRate putImage;
 
@@ -330,8 +338,24 @@ public class NameNodeMetrics {
     blockOpsQueued.set(size);
   }
 
+  public void setDeleteBlocksQueued(int size) {
+    deleteBlocksQueued.set(size);
+  }
+
+  public void incrPendingDeleteBlocksCount(int size) {
+    pendingDeleteBlocksCount.incr(size);
+  }
+
+  public void decrPendingDeleteBlocksCount() {
+    pendingDeleteBlocksCount.decr();
+  }
+
   public void addBlockOpsBatched(int count) {
     blockOpsBatched.incr(count);
+  }
+
+  public void setPendingEditsCount(int size) {
+    pendingEditsCount.set(size);
   }
 
   public void addTransaction(long latency) {
@@ -392,6 +416,10 @@ public class NameNodeMetrics {
 
   public void addGetImage(long latency) {
     getImage.add(latency);
+  }
+
+  public void addGetAliasMap(long latency) {
+    getAliasMap.add(latency);
   }
 
   public void addPutImage(long latency) {

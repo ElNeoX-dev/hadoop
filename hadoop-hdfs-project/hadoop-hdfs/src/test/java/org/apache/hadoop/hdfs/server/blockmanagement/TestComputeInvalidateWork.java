@@ -41,11 +41,11 @@ import org.apache.hadoop.hdfs.server.common.StorageInfo;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
+import org.apache.hadoop.test.Whitebox;
 import org.apache.hadoop.util.VersionInfo;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
 
 /**
  * Test if FSNamesystem handles heartbeat right
@@ -253,6 +253,8 @@ public class TestComputeInvalidateWork {
     }
     dfs.delete(path, false);
     dfs.delete(ecFile, false);
+    BlockManagerTestUtil.waitForMarkedDeleteQueueIsEmpty(
+        cluster.getNamesystem(0).getBlockManager());
     namesystem.writeLock();
     InvalidateBlocks invalidateBlocks;
     int totalStripedDataBlocks = totalBlockGroups * (ecPolicy.getNumDataUnits()

@@ -60,7 +60,7 @@ public class AbstractAutoCreatedLeafQueue extends LeafQueue {
    *
    * @param entitlement the new entitlement for the queue (capacity,
    *                    maxCapacity, etc..)
-   * @throws SchedulerDynamicEditException
+   * @throws SchedulerDynamicEditException when setEntitlement fails.
    */
   public void setEntitlement(QueueEntitlement entitlement)
       throws SchedulerDynamicEditException {
@@ -69,16 +69,17 @@ public class AbstractAutoCreatedLeafQueue extends LeafQueue {
 
   /**
    * This methods to change capacity for a queue and adjusts its
-   * absoluteCapacity
+   * absoluteCapacity.
    *
+   * @param nodeLabel nodeLabel.
    * @param entitlement the new entitlement for the queue (capacity,
    *                    maxCapacity, etc..)
-   * @throws SchedulerDynamicEditException
+   * @throws SchedulerDynamicEditException when setEntitlement fails.
    */
   public void setEntitlement(String nodeLabel, QueueEntitlement entitlement)
       throws SchedulerDynamicEditException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       float capacity = entitlement.getCapacity();
       if (capacity < 0 || capacity > 1.0f) {
         throw new SchedulerDynamicEditException(
@@ -92,10 +93,8 @@ public class AbstractAutoCreatedLeafQueue extends LeafQueue {
       // note: we currently set maxCapacity to capacity
       // this might be revised later
       setMaxCapacity(nodeLabel, entitlement.getMaxCapacity());
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("successfully changed to " + capacity + " for queue " + this
-            .getQueueName());
-      }
+      LOG.debug("successfully changed to {} for queue {}", capacity, this
+            .getQueuePath());
 
       //update queue used capacity etc
       CSQueueUtils.updateQueueStatistics(resourceCalculator,

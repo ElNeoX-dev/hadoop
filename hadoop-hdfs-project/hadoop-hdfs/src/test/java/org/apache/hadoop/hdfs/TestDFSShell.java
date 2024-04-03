@@ -34,12 +34,14 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPOutputStream;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
-import org.apache.commons.lang.RandomStringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.XAttrNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.log4j.Level;
 import org.junit.Test;
 import org.apache.hadoop.conf.Configuration;
@@ -71,6 +73,7 @@ import org.junit.rules.Timeout;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Rule;
+import org.junit.Assert;
 
 import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.FS_TRASH_INTERVAL_KEY;
 import static org.apache.hadoop.fs.permission.AclEntryScope.ACCESS;
@@ -87,7 +90,7 @@ import static org.hamcrest.core.StringContains.containsString;
  * This class tests commands from DFSShell.
  */
 public class TestDFSShell {
-  private static final Log LOG = LogFactory.getLog(TestDFSShell.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestDFSShell.class);
   private static final AtomicInteger counter = new AtomicInteger();
   private final int SUCCESS = 0;
   private final int ERROR = 1;
@@ -721,6 +724,14 @@ public class TestDFSShell {
       assertTrue(" -mkdir returned this is a file ",
           (returned.lastIndexOf("not a directory") != -1));
       out.reset();
+      argv[0] = "-mkdir";
+      argv[1] = "/testParent/testChild";
+      ret = ToolRunner.run(shell, argv);
+      returned = out.toString();
+      assertEquals(" -mkdir returned 1", 1, ret);
+      assertTrue(" -mkdir returned there is No file or directory but has testChild in the path",
+          (returned.lastIndexOf("testChild") == -1));
+      out.reset();
       argv = new String[3];
       argv[0] = "-mv";
       argv[1] = "/testfile";
@@ -1114,6 +1125,31 @@ public class TestDFSShell {
   }
 
   @Test (timeout = 30000)
+  public void testChecksum() throws Exception {
+    PrintStream printStream = System.out;
+    try {
+      ByteArrayOutputStream out = new ByteArrayOutputStream();
+      System.setOut(new PrintStream(out));
+      FsShell shell = new FsShell(dfs.getConf());
+      final Path filePath = new Path("/testChecksum/file1");
+      writeFile(dfs, filePath);
+      FileStatus fileStatus = dfs.getFileStatus(filePath);
+      FileChecksum checksum = dfs.getFileChecksum(filePath);
+      String[] args = {"-checksum", "-v", filePath.toString()};
+      assertEquals(0, shell.run(args));
+      // verify block size is printed in the output
+      assertTrue(out.toString()
+          .contains(String.format("BlockSize=%s", fileStatus.getBlockSize())));
+      // verify checksum is printed in the output
+      assertTrue(out.toString().contains(StringUtils
+          .byteToHexString(checksum.getBytes(), 0, checksum.getLength())));
+    } finally {
+      Assert.assertNotNull(printStream);
+      System.setOut(printStream);
+    }
+  }
+
+  @Test (timeout = 30000)
   public void testCopyToLocal() throws IOException {
     FsShell shell = new FsShell(dfs.getConf());
 
@@ -1268,9 +1304,6 @@ public class TestDFSShell {
       exitCode = shell.run(args);
       LOG.info("RUN: "+args[0]+" exit=" + exitCode);
       return exitCode;
-    } catch (IOException e) {
-      LOG.error("RUN: "+args[0]+" IOException="+e.getMessage());
-      throw e;
     } catch (RuntimeException e) {
       LOG.error("RUN: "+args[0]+" RuntimeException="+e.getMessage());
       throw e;
@@ -3008,6 +3041,96 @@ public class TestDFSShell {
     assertThat(res, not(0));
   }
 
+  @Test (timeout = 300000)
+  public void testAppendToFileWithOptionN() throws Exception {
+    final int inputFileLength = 1024 * 1024;
+    File testRoot = new File(TEST_ROOT_DIR, "testAppendToFileWithOptionN");
+    testRoot.mkdirs();
+
+    File file1 = new File(testRoot, "file1");
+    createLocalFileWithRandomData(inputFileLength, file1);
+
+    Configuration conf = new HdfsConfiguration();
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(6).build()) {
+      cluster.waitActive();
+      FileSystem hdfs = cluster.getFileSystem();
+      assertTrue("Not a HDFS: " + hdfs.getUri(),
+          hdfs instanceof DistributedFileSystem);
+
+      // Run appendToFile with option n by replica policy once, make sure that the target file is
+      // created and is of the right size and block number is correct.
+      String dir = "/replica";
+      boolean mkdirs = hdfs.mkdirs(new Path(dir));
+      assertTrue("Mkdir fail", mkdirs);
+      Path remoteFile = new Path(dir + "/remoteFile");
+      FsShell shell = new FsShell();
+      shell.setConf(conf);
+      String[] argv = new String[] {
+          "-appendToFile", "-n", file1.toString(), remoteFile.toString() };
+      int res = ToolRunner.run(shell, argv);
+      assertEquals("Run appendToFile command fail", 0, res);
+      FileStatus fileStatus = hdfs.getFileStatus(remoteFile);
+      assertEquals("File size should be " + inputFileLength,
+          inputFileLength, fileStatus.getLen());
+      BlockLocation[] fileBlockLocations =
+          hdfs.getFileBlockLocations(fileStatus, 0, fileStatus.getLen());
+      assertEquals("Block Num should be 1", 1, fileBlockLocations.length);
+
+      // Run appendToFile with option n by replica policy again and
+      // make sure that the target file size has been doubled and block number has been doubled.
+      res = ToolRunner.run(shell, argv);
+      assertEquals("Run appendToFile command fail", 0, res);
+      fileStatus = hdfs.getFileStatus(remoteFile);
+      assertEquals("File size should be " + inputFileLength * 2,
+          inputFileLength * 2, fileStatus.getLen());
+      fileBlockLocations = hdfs.getFileBlockLocations(fileStatus, 0, fileStatus.getLen());
+      assertEquals("Block Num should be 2", 2, fileBlockLocations.length);
+
+      // Before run appendToFile with option n by ec policy, set ec policy for the dir.
+      dir = "/ecPolicy";
+      final String ecPolicyName = "RS-6-3-1024k";
+      mkdirs = hdfs.mkdirs(new Path(dir));
+      assertTrue("Mkdir fail", mkdirs);
+      ((DistributedFileSystem) hdfs).setErasureCodingPolicy(new Path(dir), ecPolicyName);
+      ErasureCodingPolicy erasureCodingPolicy =
+          ((DistributedFileSystem) hdfs).getErasureCodingPolicy(new Path(dir));
+      assertEquals("Set ec policy fail", ecPolicyName, erasureCodingPolicy.getName());
+
+      // Run appendToFile with option n by ec policy once, make sure that the target file is
+      // created and is of the right size and block group number is correct.
+      remoteFile = new Path(dir + "/remoteFile");
+      argv = new String[] {
+          "-appendToFile", "-n", file1.toString(), remoteFile.toString() };
+      res = ToolRunner.run(shell, argv);
+      assertEquals("Run appendToFile command fail", 0, res);
+      fileStatus = hdfs.getFileStatus(remoteFile);
+      assertEquals("File size should be " + inputFileLength,
+          inputFileLength, fileStatus.getLen());
+      fileBlockLocations = hdfs.getFileBlockLocations(fileStatus, 0, fileStatus.getLen());
+      assertEquals("Block Group Num should be 1", 1, fileBlockLocations.length);
+
+      // Run appendToFile without option n by ec policy again and make sure that
+      // append on EC file without new block must fail.
+      argv = new String[] {
+          "-appendToFile", file1.toString(), remoteFile.toString() };
+      res = ToolRunner.run(shell, argv);
+      assertTrue("Run appendToFile command must fail", res != 0);
+
+      // Run appendToFile with option n by ec policy again and
+      // make sure that the target file size has been doubled
+      // and block group number has been doubled.
+      argv = new String[] {
+          "-appendToFile", "-n", file1.toString(), remoteFile.toString() };
+      res = ToolRunner.run(shell, argv);
+      assertEquals("Run appendToFile command fail", 0, res);
+      fileStatus = hdfs.getFileStatus(remoteFile);
+      assertEquals("File size should be " + inputFileLength * 2,
+          inputFileLength * 2, fileStatus.getLen());
+      fileBlockLocations = hdfs.getFileBlockLocations(fileStatus, 0, fileStatus.getLen());
+      assertEquals("Block Group Num should be 2", 2, fileBlockLocations.length);
+    }
+  }
+
   @Test (timeout = 30000)
   public void testSetXAttrPermission() throws Exception {
     UserGroupInformation user = UserGroupInformation.
@@ -3404,7 +3527,7 @@ public class TestDFSShell {
         String str = out.toString();
         assertTrue("xattr value was incorrectly returned",
           str.indexOf(
-              "getfattr: At least one of the attributes provided was not found")
+              "getfattr: " + XAttrNotFoundException.DEFAULT_EXCEPTION_MSG)
                >= 0);
         out.reset();
       }

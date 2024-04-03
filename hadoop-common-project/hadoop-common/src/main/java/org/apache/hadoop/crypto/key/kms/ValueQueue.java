@@ -33,11 +33,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import com.google.common.base.Preconditions;
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.classification.InterfaceAudience;
 
 /**
@@ -63,7 +63,7 @@ public class ValueQueue <E> {
      * @param keyName Key name
      * @param keyQueue Queue that needs to be filled
      * @param numValues number of Values to be added to the queue.
-     * @throws IOException
+     * @throws IOException raised on errors performing I/O.
      */
     public void fillQueueForKey(String keyName,
         Queue<E> keyQueue, int numValues) throws IOException;
@@ -268,7 +268,7 @@ public class ValueQueue <E> {
    * Initializes the Value Queues for the provided keys by calling the
    * fill Method with "numInitValues" values
    * @param keyNames Array of key Names
-   * @throws ExecutionException
+   * @throws ExecutionException executionException.
    */
   public void initializeQueuesForKeys(String... keyNames)
       throws ExecutionException {
@@ -285,8 +285,8 @@ public class ValueQueue <E> {
    * function to add 1 value to Queue and then drain it.
    * @param keyName String key name
    * @return E the next value in the Queue
-   * @throws IOException
-   * @throws ExecutionException
+   * @throws IOException raised on errors performing I/O.
+   * @throws ExecutionException executionException.
    */
   public E getNext(String keyName)
       throws IOException, ExecutionException {
@@ -344,9 +344,9 @@ public class ValueQueue <E> {
    * <code>SyncGenerationPolicy</code> specified by the user.
    * @param keyName String key name
    * @param num Minimum number of values to return.
-   * @return List<E> values returned
-   * @throws IOException
-   * @throws ExecutionException
+   * @return {@literal List<E>} values returned
+   * @throws IOException raised on errors performing I/O.
+   * @throws ExecutionException execution exception.
    */
   public List<E> getAtMost(String keyName, int num) throws IOException,
       ExecutionException {
@@ -379,13 +379,15 @@ public class ValueQueue <E> {
           if (numToFill > 0) {
             refiller.fillQueueForKey(keyName, ekvs, numToFill);
           }
-          // Asynch task to fill > lowWatermark
-          if (i <= (int) (lowWatermark * numValues)) {
-            submitRefillTask(keyName, keyQueue);
-          }
-          return ekvs;
+
+          break;
+        } else {
+          ekvs.add(val);
         }
-        ekvs.add(val);
+      }
+      // Schedule a refill task in case queue has gone below the watermark
+      if (keyQueue.size() < (int) (lowWatermark * numValues)) {
+        submitRefillTask(keyName, keyQueue);
       }
     } catch (Exception e) {
       throw new IOException("Exception while contacting value generator ", e);

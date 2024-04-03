@@ -20,9 +20,9 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.constraint;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Maps;
-import org.apache.commons.lang.StringUtils;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.yarn.api.records.AllocationTagNamespaceType;
@@ -115,6 +115,11 @@ public class AllocationTagsManager {
 
     private void removeTagFromInnerMap(Map<String, Long> innerMap, String tag) {
       Long count = innerMap.get(tag);
+      if (count == null) {
+        LOG.warn("Trying to remove tags, however the tag " + tag
+            + " no longer exists on this node/rack.");
+        return;
+      }
       if (count > 1) {
         innerMap.put(tag, count - 1);
       } else {
@@ -400,9 +405,10 @@ public class AllocationTagsManager {
 
   /**
    * Helper method to just remove the tags associated with a container.
-   * @param nodeId
-   * @param applicationId
-   * @param allocationTags
+   *
+   * @param nodeId nodeId.
+   * @param applicationId application Id
+   * @param allocationTags application Tags.
    */
   public void removeTags(NodeId nodeId, ApplicationId applicationId,
       Set<String> allocationTags) {
@@ -639,7 +645,7 @@ public class AllocationTagsManager {
    * Returns a map whose key is the allocation tag and value is the
    * count of allocations with this tag.
    *
-   * @param nodeId
+   * @param nodeId nodeId.
    * @return allocation tag to count mapping
    */
   public Map<String, Long> getAllocationTagsWithCount(NodeId nodeId) {

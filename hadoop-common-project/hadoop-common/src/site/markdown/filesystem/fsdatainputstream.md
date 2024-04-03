@@ -200,6 +200,10 @@ Some FileSystems do not raise an exception if this condition is not met. They
 instead return -1 on any `read()` operation where, at the time of the read,
 `len(data(FSDIS)) < pos(FSDIS)`.
 
+After a failed seek, the value of `pos(FSDIS)` may change.
+As an example, seeking past the EOF may move the read position
+to the end of the file, *as well as raising an `EOFException`.*
+
 #### Postconditions
 
     FSDIS' = (s, data, True)
@@ -210,6 +214,16 @@ There is an implicit invariant: a seek to the current position is a no-op
 
 Implementations may recognise this operation and bypass all other precondition
 checks, leaving the input stream unchanged.
+
+The most recent connectors to object stores all implement some form
+of "lazy-seek": the `seek()` call may appear to update the stream, and the value
+of `getPos()` is updated, but the file is not opened/reopenend until
+data is actually read. Implementations of lazy seek MUST still validate
+the new seek position against the known length of the file.
+However the state of the file (i.e. does it exist, what
+its current length is) does not need to be refreshed at this point.
+The fact that a file has been deleted or truncated may not surface until
+that `read()` call.
 
 
 ### `Seekable.seekToNewSource(offset)`
@@ -260,6 +274,43 @@ Outside of test methods, the primary use of this method is in the {{FSInputCheck
 class, which can react to a checksum error in a read by attempting to source
 the data elsewhere. If a new source can be found it attempts to reread and
 recheck that portion of the file.
+
+### `CanUnbuffer.unbuffer()`
+
+This operation instructs the source to release any system resources they are
+currently holding on to, such as buffers, sockets, file descriptors, etc. Any
+subsequent IO operation will likely have to reacquire these resources.
+Unbuffering is useful in situation where streams need to remain open, but no IO
+operation is expected from the stream in the immediate future (examples include
+file handle cacheing).
+
+#### Preconditions
+
+Not all subclasses implement this operation. In addition to implementing
+`CanUnbuffer`. Subclasses must implement the `StreamCapabilities` interface and
+`StreamCapabilities.hasCapability(UNBUFFER)` must return true. If a subclass
+implements `CanUnbuffer` but does not report the functionality via
+`StreamCapabilities` then the call to `unbuffer` does nothing. If a subclass
+reports that it does implement `UNBUFFER`, but does not implement the
+`CanUnbuffer` interface, an `UnsupportedOperationException` is thrown.
+
+    supported(FSDIS, StreamCapabilities.hasCapability && FSDIS.hasCapability(UNBUFFER) && CanUnbuffer.unbuffer)
+
+This method is not thread-safe. If `unbuffer` is called while a `read` is in
+progress, the outcome is undefined.
+
+`unbuffer` can be called on a closed file, in which case `unbuffer` will do
+nothing.
+
+#### Postconditions
+
+The majority of subclasses that do not implement this operation simply
+do nothing.
+
+If the operation is supported, `unbuffer` releases any and all system resources
+associated with the stream. The exact list of what these resources are is
+generally implementation dependent, however, in general, it may include
+buffers, sockets, file descriptors, etc.
 
 ## <a name="PositionedReadable"></a> interface `PositionedReadable`
 
@@ -392,6 +443,52 @@ The semantics of this are exactly equivalent to
 That is, the buffer is filled entirely with the contents of the input source
 from position `position`
 
+### `default void readVectored(List<? extends FileRange> ranges, IntFunction<ByteBuffer> allocate)`
+
+Read fully data for a list of ranges asynchronously. The default implementation
+iterates through the ranges, tries to coalesce the ranges based on values of
+`minSeekForVectorReads` and `maxReadSizeForVectorReads` and then read each merged
+ranges synchronously, but the intent is sub classes can implement efficient
+implementation. Reading in both direct and heap byte buffers are supported.
+Also, clients are encouraged to use `WeakReferencedElasticByteBufferPool` for
+allocating buffers such that even direct buffers are garbage collected when
+they are no longer referenced.
+
+The position returned by `getPos()` after `readVectored()` is undefined.
+
+If a file is changed while the `readVectored()` operation is in progress, the output is
+undefined. Some ranges may have old data, some may have new, and some may have both.
+
+While a `readVectored()` operation is in progress, normal read api calls may block.
+
+Note: Don't use direct buffers for reading from ChecksumFileSystem as that may
+lead to memory fragmentation explained in HADOOP-18296.
+
+
+#### Preconditions
+
+For each requested range:
+
+    range.getOffset >= 0 else raise IllegalArgumentException
+    range.getLength >= 0 else raise EOFException
+
+#### Postconditions
+
+For each requested range:
+
+    range.getData() returns CompletableFuture<ByteBuffer> which will have data
+    from range.getOffset to range.getLength.
+
+### `minSeekForVectorReads()`
+
+The smallest reasonable seek. Two ranges won't be merged together if the difference between
+end of first and start of next range is more than this value.
+
+### `maxReadSizeForVectorReads()`
+
+Maximum number of bytes which can be read in one go after merging the ranges.
+Two ranges won't be merged if the combined data to be read is more than this value.
+Essentially setting this to 0 will disable the merging of ranges.
 
 ## Consistency
 

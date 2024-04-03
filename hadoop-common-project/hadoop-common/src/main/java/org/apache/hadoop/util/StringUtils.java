@@ -35,15 +35,16 @@ import java.util.StringTokenizer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.lang.SystemUtils;
-import org.apache.commons.lang.time.FastDateFormat;
+import org.apache.commons.lang3.SystemUtils;
+import org.apache.commons.lang3.time.FastDateFormat;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.log4j.LogManager;
 
-import com.google.common.base.Preconditions;
-import com.google.common.net.InetAddresses;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
 
 /**
  * General string utils
@@ -120,7 +121,12 @@ public class StringUtils {
     return TraditionalBinaryPrefix.long2String(number, "", 1);
   }
 
-  /** The same as String.format(Locale.ENGLISH, format, objects). */
+  /**
+   * The same as String.format(Locale.ENGLISH, format, objects).
+   * @param format format.
+   * @param objects objects.
+   * @return format string.
+   */
   public static String format(final String format, final Object... objects) {
     return String.format(Locale.ENGLISH, format, objects);
   }
@@ -156,7 +162,7 @@ public class StringUtils {
   /**
    * Given an array of bytes it will convert the bytes to a hex string
    * representation of the bytes
-   * @param bytes
+   * @param bytes bytes.
    * @param start start index, inclusively
    * @param end end index, exclusively
    * @return hex string representation of the byte array
@@ -172,7 +178,11 @@ public class StringUtils {
     return s.toString();
   }
 
-  /** Same as byteToHexString(bytes, 0, bytes.length). */
+  /**
+   * Same as byteToHexString(bytes, 0, bytes.length).
+   * @param bytes bytes.
+   * @return byteToHexString.
+   */
   public static String byteToHexString(byte bytes[]) {
     return byteToHexString(bytes, 0, bytes.length);
   }
@@ -203,8 +213,9 @@ public class StringUtils {
     return bts;
   }
   /**
-   * 
-   * @param uris
+   * uriToString.
+   * @param uris uris.
+   * @return uriToString.
    */
   public static String uriToString(URI[] uris){
     if (uris == null) {
@@ -242,8 +253,9 @@ public class StringUtils {
   }
   
   /**
-   * 
-   * @param str
+   * stringToPath.
+   * @param str str.
+   * @return path array.
    */
   public static Path[] stringToPath(String[] str){
     if (str == null) {
@@ -263,6 +275,8 @@ public class StringUtils {
    * 
    * @param finishTime finish time
    * @param startTime start time
+   * @return a String in the format Xhrs, Ymins, Z sec,
+   *         for the time difference between two times.
    */
   public static String formatTimeDiff(long finishTime, long startTime){
     long timeDiff = finishTime - startTime; 
@@ -275,6 +289,7 @@ public class StringUtils {
    * String in the format Xhrs, Ymins, Z sec. 
    * 
    * @param timeDiff The time difference to format
+   * @return formatTime String.
    */
   public static String formatTime(long timeDiff){
     StringBuilder buf = new StringBuilder();
@@ -305,6 +320,7 @@ public class StringUtils {
    * more than 100 hours ,it is displayed as 99hrs, 59mins, 59sec.
    *
    * @param timeDiff The time difference to format
+   * @return format time sortable.
    */
   public static String formatTimeSortable(long timeDiff) {
     StringBuilder buf = new StringBuilder();
@@ -425,10 +441,36 @@ public class StringUtils {
   }
 
   /**
+   * Returns a collection of strings, trimming leading and trailing whitespace
+   * on each value. Duplicates are not removed.
+   *
+   * @param str
+   *          String separated by delim.
+   * @param delim
+   *          Delimiter to separate the values in str.
+   * @return Collection of string values.
+   */
+  public static Collection<String> getTrimmedStringCollection(String str,
+      String delim) {
+    List<String> values = new ArrayList<String>();
+    if (str == null)
+      return values;
+    StringTokenizer tokenizer = new StringTokenizer(str, delim);
+    while (tokenizer.hasMoreTokens()) {
+      String next = tokenizer.nextToken();
+      if (next == null || next.trim().isEmpty()) {
+        continue;
+      }
+      values.add(next.trim());
+    }
+    return values;
+  }
+
+  /**
    * Splits a comma separated value <code>String</code>, trimming leading and
    * trailing whitespace on each value. Duplicate and empty values are removed.
    *
-   * @param str a comma separated <String> with values, may be null
+   * @param str a comma separated <code>String</code> with values, may be null
    * @return a <code>Collection</code> of <code>String</code> values, empty
    *         Collection if null String input
    */
@@ -537,6 +579,7 @@ public class StringUtils {
    * @param escapeChar character used to escape
    * @param start from where to search
    * @param split used to pass back the extracted string
+   * @return index.
    */
   public static int findNext(String str, char separator, char escapeChar, 
                              int start, StringBuilder split) {
@@ -589,7 +632,12 @@ public class StringUtils {
   }
   
   /**
+   * escapeString.
+   *
+   * @param str str.
+   * @param escapeChar escapeChar.
    * @param charsToEscape array of characters to be escaped
+   * @return escapeString.
    */
   public static String escapeString(String str, char escapeChar, 
                                     char[] charsToEscape) {
@@ -632,7 +680,11 @@ public class StringUtils {
   }
   
   /**
+   * unEscapeString.
+   * @param str str.
+   * @param escapeChar escapeChar.
    * @param charsToEscape array of characters to unescape
+   * @return escape string.
    */
   public static String unEscapeString(String str, char escapeChar, 
                                       char[] charsToEscape) {
@@ -726,6 +778,7 @@ public class StringUtils {
         public void run() {
           LOG.info(toStartupShutdownString("SHUTDOWN_MSG: ", new String[]{
             "Shutting down " + classname + " at " + hostname}));
+          LogManager.shutdown();
         }
       }, SHUTDOWN_HOOK_PRIORITY);
 
@@ -743,7 +796,7 @@ public class StringUtils {
     return toStartupShutdownString("STARTUP_MSG: ", new String[] {
         "Starting " + classname,
         "  host = " + hostname,
-        "  args = " + Arrays.asList(args),
+        "  args = " + (args != null ? Arrays.asList(args) : new ArrayList<>()),
         "  version = " + VersionInfo.getVersion(),
         "  classpath = " + System.getProperty("java.class.path"),
         "  build = " + VersionInfo.getUrl() + " -r "
@@ -780,7 +833,10 @@ public class StringUtils {
     }
 
     /**
-     * @return The TraditionalBinaryPrefix object corresponding to the symbol.
+     * The TraditionalBinaryPrefix object corresponding to the symbol.
+     *
+     * @param symbol symbol.
+     * @return traditional binary prefix object.
      */
     public static TraditionalBinaryPrefix valueOf(char symbol) {
       symbol = Character.toUpperCase(symbol);
@@ -880,7 +936,7 @@ public class StringUtils {
 
     /**
      * Escapes HTML Special characters present in the string.
-     * @param string
+     * @param string param string.
      * @return HTML Escaped String representation
      */
     public static String escapeHTML(String string) {
@@ -915,13 +971,22 @@ public class StringUtils {
     }
 
   /**
+   * a byte description of the given long interger value.
+   *
+   * @param len len.
    * @return a byte description of the given long interger value.
    */
   public static String byteDesc(long len) {
     return TraditionalBinaryPrefix.long2String(len, "B", 2);
   }
 
-  /** @deprecated use StringUtils.format("%.2f", d). */
+  /**
+   * limitDecimalTo2.
+   *
+   * @param d double param.
+   * @return string value ("%.2f").
+   * @deprecated use StringUtils.format("%.2f", d).
+   */
   @Deprecated
   public static String limitDecimalTo2(double d) {
     return format("%.2f", d);
@@ -932,6 +997,7 @@ public class StringUtils {
    *
    * @param separator Separator to join with.
    * @param strings Strings to join.
+   * @return join string.
    */
   public static String join(CharSequence separator, Iterable<?> strings) {
     Iterator<?> i = strings.iterator();
@@ -987,7 +1053,7 @@ public class StringUtils {
     String[] words = split(StringUtils.toLowerCase(s), ESCAPE_CHAR,  '_');
 
     for (String word : words)
-      sb.append(org.apache.commons.lang.StringUtils.capitalize(word));
+      sb.append(org.apache.commons.lang3.StringUtils.capitalize(word));
 
     return sb.toString();
   }
@@ -1006,8 +1072,8 @@ public class StringUtils {
    * @param template String template to receive replacements
    * @param pattern Pattern to match for identifying tokens, must use a capturing
    *   group
-   * @param replacements Map<String, String> mapping tokens identified by the
-   *   capturing group to their replacement values
+   * @param replacements Map&lt;String, String&gt; mapping tokens identified by
+   * the capturing group to their replacement values
    * @return String template with replacements
    */
   public static String replaceTokens(String template, Pattern pattern,
@@ -1027,6 +1093,8 @@ public class StringUtils {
   
   /**
    * Get stack trace for a given thread.
+   * @param t thread.
+   * @return stack trace string.
    */
   public static String getStackTrace(Thread t) {
     final StackTraceElement[] stackTrace = t.getStackTrace();
@@ -1183,4 +1251,64 @@ public class StringUtils {
     return true;
   }
 
+  /**
+   * Same as WordUtils#wrap in commons-lang 2.6. Unlike commons-lang3, leading
+   * spaces on the first line are NOT stripped.
+   *
+   * @param str  the String to be word wrapped, may be null
+   * @param wrapLength  the column to wrap the words at, less than 1 is treated
+   *                   as 1
+   * @param newLineStr  the string to insert for a new line,
+   *  <code>null</code> uses the system property line separator
+   * @param wrapLongWords  true if long words (such as URLs) should be wrapped
+   * @return a line with newlines inserted, <code>null</code> if null input
+   */
+  public static String wrap(String str, int wrapLength, String newLineStr,
+      boolean wrapLongWords) {
+    if(str == null) {
+      return null;
+    } else {
+      if(newLineStr == null) {
+        newLineStr = System.lineSeparator();
+      }
+
+      if(wrapLength < 1) {
+        wrapLength = 1;
+      }
+
+      int inputLineLength = str.length();
+      int offset = 0;
+      StringBuffer wrappedLine = new StringBuffer(inputLineLength + 32);
+
+      while(inputLineLength - offset > wrapLength) {
+        if(str.charAt(offset) == 32) {
+          ++offset;
+        } else {
+          int spaceToWrapAt = str.lastIndexOf(32, wrapLength + offset);
+          if(spaceToWrapAt >= offset) {
+            wrappedLine.append(str.substring(offset, spaceToWrapAt));
+            wrappedLine.append(newLineStr);
+            offset = spaceToWrapAt + 1;
+          } else if(wrapLongWords) {
+            wrappedLine.append(str.substring(offset, wrapLength + offset));
+            wrappedLine.append(newLineStr);
+            offset += wrapLength;
+          } else {
+            spaceToWrapAt = str.indexOf(32, wrapLength + offset);
+            if(spaceToWrapAt >= 0) {
+              wrappedLine.append(str.substring(offset, spaceToWrapAt));
+              wrappedLine.append(newLineStr);
+              offset = spaceToWrapAt + 1;
+            } else {
+              wrappedLine.append(str.substring(offset));
+              offset = inputLineLength;
+            }
+          }
+        }
+      }
+
+      wrappedLine.append(str.substring(offset));
+      return wrappedLine.toString();
+    }
+  }
 }

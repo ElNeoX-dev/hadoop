@@ -114,7 +114,7 @@ int update_cgroups_parameters(
 
   if (!full_path) {
     fprintf(ERRORFILE,
-      "Failed to get cgroups path to write, it should be a configuration issue");
+      "Failed to get cgroups path to write, it should be a configuration issue\n");
     failure = 1;
     goto cleanup;
   }
@@ -127,30 +127,30 @@ int update_cgroups_parameters(
   // Make sure file exists
   struct stat sb;
   if (stat(full_path, &sb) != 0) {
-    fprintf(ERRORFILE, "CGroups: Could not find file to write, %s", full_path);
+    fprintf(ERRORFILE, "CGroups: Could not find file to write, %s\n", full_path);
     failure = 1;
     goto cleanup;
   }
 
-  fprintf(ERRORFILE, "CGroups: Updating cgroups, path=%s, value=%s",
+  fprintf(ERRORFILE, "CGroups: Updating cgroups, path=%s, value=%s\n",
     full_path, value);
 
   // Write values to file
   FILE *f;
   f = fopen(full_path, "a");
   if (!f) {
-    fprintf(ERRORFILE, "CGroups: Failed to open cgroups file, %s", full_path);
+    fprintf(ERRORFILE, "CGroups: Failed to open cgroups file, %s\n", full_path);
     failure = 1;
     goto cleanup;
   }
   if (fprintf(f, "%s", value) < 0) {
-    fprintf(ERRORFILE, "CGroups: Failed to write cgroups file, %s", full_path);
+    fprintf(ERRORFILE, "CGroups: Failed to write cgroups file, %s\n", full_path);
     fclose(f);
     failure = 1;
     goto cleanup;
   }
   if (fclose(f) != 0) {
-    fprintf(ERRORFILE, "CGroups: Failed to close cgroups file, %s", full_path);
+    fprintf(ERRORFILE, "CGroups: Failed to close cgroups file, %s\n", full_path);
     failure = 1;
     goto cleanup;
   }

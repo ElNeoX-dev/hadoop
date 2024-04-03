@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.Path;
@@ -50,8 +48,7 @@ abstract public class ReadStripedFileWithDecodingHelper {
       LoggerFactory.getLogger(ReadStripedFileWithDecodingHelper.class);
 
   static {
-    ((Log4JLogger)LogFactory.getLog(BlockPlacementPolicy.class))
-        .getLogger().setLevel(org.apache.log4j.Level.ALL);
+    GenericTestUtils.setLogLevel(BlockPlacementPolicy.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(BlockManager.LOG, Level.DEBUG);
     GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.DEBUG);
     GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.DEBUG);
@@ -76,13 +73,11 @@ abstract public class ReadStripedFileWithDecodingHelper {
   public static MiniDFSCluster initializeCluster() throws IOException {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCK_SIZE);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 0);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 2);
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_STREAMS_HARD_LIMIT_KEY,
-        0);
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
-        false);
+        2);
     MiniDFSCluster myCluster = new MiniDFSCluster.Builder(conf)
-        .numDataNodes(NUM_DATANODES)
+        .numDataNodes(NUM_DATANODES + 3)
         .build();
     myCluster.getFileSystem().enableErasureCodingPolicy(
         StripedFileTestUtil.getDefaultECPolicy().getName());
@@ -102,6 +97,22 @@ abstract public class ReadStripedFileWithDecodingHelper {
       DistributedFileSystem dfs, Path file, long length) throws IOException {
     BlockLocation[] locs = dfs.getFileBlockLocations(file, 0, length);
     String name = (locs[0].getNames())[0];
+    int dnIndex = 0;
+    for (DataNode dn : cluster.getDataNodes()) {
+      int port = dn.getXferPort();
+      if (name.contains(Integer.toString(port))) {
+        return dnIndex;
+      }
+      dnIndex++;
+    }
+    return -1;
+  }
+
+  // The index begins from 1.
+  public static int findDataNodeAtIndex(MiniDFSCluster cluster,
+      DistributedFileSystem dfs, Path file, long length, int index) throws IOException {
+    BlockLocation[] locs = dfs.getFileBlockLocations(file, 0, length);
+    String name = (locs[0].getNames())[index - 1];
     int dnIndex = 0;
     for (DataNode dn : cluster.getDataNodes()) {
       int port = dn.getXferPort();

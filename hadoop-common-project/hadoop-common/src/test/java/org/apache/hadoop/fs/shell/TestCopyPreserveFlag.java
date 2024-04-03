@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.fs.shell;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-
 import java.io.IOException;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -31,21 +32,23 @@ import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.shell.CopyCommands.CopyFromLocal;
 import org.apache.hadoop.fs.shell.CopyCommands.Cp;
 import org.apache.hadoop.fs.shell.CopyCommands.Get;
 import org.apache.hadoop.fs.shell.CopyCommands.Put;
-import org.apache.hadoop.fs.shell.CopyCommands.CopyFromLocal;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 
 public class TestCopyPreserveFlag {
   private static final int MODIFICATION_TIME = 12345000;
   private static final int ACCESS_TIME = 23456000;
   private static final Path DIR_FROM = new Path("d0");
+  private static final Path DIR_FROM_SPL = new Path("d0 space");
   private static final Path DIR_TO1 = new Path("d1");
   private static final Path DIR_TO2 = new Path("d2");
   private static final Path FROM = new Path(DIR_FROM, "f0");
+  private static final Path FROM_SPL = new Path(DIR_FROM_SPL, "f0");
   private static final Path TO = new Path(DIR_TO1, "f1");
   private static final FsPermission PERMISSIONS = new FsPermission(
     FsAction.ALL,
@@ -121,6 +124,30 @@ public class TestCopyPreserveFlag {
   }
 
   @Test(timeout = 10000)
+  public void testPutWithPQ() throws Exception {
+    Put put = new Put();
+    run(put, "-p", "-q", "100", FROM.toString(), TO.toString());
+    assertEquals(put.getThreadPoolQueueSize(), 100);
+    assertAttributesPreserved(TO);
+  }
+
+  @Test(timeout = 10000)
+  public void testPutWithQ() throws Exception {
+    Put put = new Put();
+    run(put, "-q", "100", FROM.toString(), TO.toString());
+    assertEquals(put.getThreadPoolQueueSize(), 100);
+    assertAttributesChanged(TO);
+  }
+
+  @Test(timeout = 10000)
+  public void testPutWithSplCharacter() throws Exception {
+    fs.mkdirs(DIR_FROM_SPL);
+    fs.createNewFile(FROM_SPL);
+    run(new Put(), FROM_SPL.toString(), TO.toString());
+    assertAttributesChanged(TO);
+  }
+
+  @Test(timeout = 10000)
   public void testCopyFromLocal() throws Exception {
     run(new CopyFromLocal(), FROM.toString(), TO.toString());
     assertAttributesChanged(TO);
@@ -148,6 +175,34 @@ public class TestCopyPreserveFlag {
   public void testGetWithoutP() throws Exception {
     run(new Get(), FROM.toString(), TO.toString());
     assertAttributesChanged(TO);
+  }
+
+  @Test(timeout = 10000)
+  public void testGetWithPQ() throws Exception {
+    Get get = new Get();
+    run(get, "-p", "-q", "100", FROM.toString(), TO.toString());
+    assertEquals(get.getThreadPoolQueueSize(), 100);
+    assertAttributesPreserved(TO);
+  }
+
+  @Test(timeout = 10000)
+  public void testGetWithQ() throws Exception {
+    Get get = new Get();
+    run(get, "-q", "100", FROM.toString(), TO.toString());
+    assertEquals(get.getThreadPoolQueueSize(), 100);
+    assertAttributesChanged(TO);
+  }
+
+  @Test(timeout = 10000)
+  public void testGetWithThreads() throws Exception {
+    run(new Get(), "-t", "10", FROM.toString(), TO.toString());
+    assertAttributesChanged(TO);
+  }
+
+  @Test(timeout = 10000)
+  public void testGetWithThreadsPreserve() throws Exception {
+    run(new Get(), "-p", "-t", "10", FROM.toString(), TO.toString());
+    assertAttributesPreserved(TO);
   }
 
   @Test(timeout = 10000)

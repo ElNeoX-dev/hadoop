@@ -29,7 +29,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -44,13 +46,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.ThreadPoolExecutor;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
@@ -82,13 +83,13 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 /** Dispatching block replica moves between datanodes. */
 @InterfaceAudience.Private
 public class Dispatcher {
-  static final Log LOG = LogFactory.getLog(Dispatcher.class);
+  static final Logger LOG = LoggerFactory.getLogger(Dispatcher.class);
 
   /**
    * the period of time to delay the usage of a DataNode after hitting
@@ -238,7 +239,8 @@ public class Dispatcher {
     private DDatanode proxySource;
     private StorageGroup target;
 
-    private PendingMove(Source source, StorageGroup target) {
+    @VisibleForTesting
+    PendingMove(Source source, StorageGroup target) {
       this.source = source;
       this.target = target;
     }
@@ -279,12 +281,19 @@ public class Dispatcher {
     /**
      * @return true if the given block is good for the tentative move.
      */
-    private boolean markMovedIfGoodBlock(DBlock block, StorageType targetStorageType) {
+    @VisibleForTesting
+    boolean markMovedIfGoodBlock(DBlock block, StorageType targetStorageType) {
       synchronized (block) {
         synchronized (movedBlocks) {
           if (isGoodBlockCandidate(source, target, targetStorageType, block)) {
             if (block instanceof DBlockStriped) {
               reportedBlock = ((DBlockStriped) block).getInternalBlock(source);
+              if (reportedBlock == null) {
+                LOG.info(
+                    "No striped internal block on source {}, block {}. Skipping.",
+                    source, block);
+                return false;
+              }
             } else {
               reportedBlock = block;
             }
@@ -391,7 +400,7 @@ public class Dispatcher {
 
         sendRequest(out, eb, accessToken);
         receiveResponse(in);
-        nnc.getBytesMoved().addAndGet(reportedBlock.getNumBytes());
+        nnc.addBytesMoved(reportedBlock.getNumBytes());
         target.getDDatanode().setHasSuccess();
         LOG.info("Successfully moved " + this);
       } catch (IOException e) {
@@ -484,7 +493,7 @@ public class Dispatcher {
 
   public static class DBlockStriped extends DBlock {
 
-    final byte[] indices;
+    private byte[] indices;
     final short dataBlockNum;
     final int cellSize;
 
@@ -496,7 +505,7 @@ public class Dispatcher {
       this.cellSize = cellSize;
     }
 
-    public DBlock getInternalBlock(StorageGroup storage) {
+    DBlock getInternalBlock(StorageGroup storage) {
       int idxInLocs = locations.indexOf(storage);
       if (idxInLocs == -1) {
         return null;
@@ -515,7 +524,34 @@ public class Dispatcher {
 
     @Override
     public long getNumBytes(StorageGroup storage) {
-      return getInternalBlock(storage).getNumBytes();
+      DBlock block = getInternalBlock(storage);
+      if (block == null) {
+        return 0;
+      }
+      return block.getNumBytes();
+    }
+
+    public void setIndices(byte[] indices) {
+      this.indices = indices;
+    }
+
+    /**
+     * Adjust EC block indices，it will remove the element of adjustList from indices.
+     * @param adjustList the list will be removed from indices
+     */
+    public void adjustIndices(List<Integer> adjustList) {
+      if (adjustList.isEmpty()) {
+        return;
+      }
+
+      byte[] newIndices = new byte[indices.length - adjustList.size()];
+      for (int i = 0, j = 0; i < indices.length; ++i) {
+        if (!adjustList.contains(i)) {
+          newIndices[j] = indices[i];
+          ++j;
+        }
+      }
+      this.indices = newIndices;
     }
   }
 
@@ -793,7 +829,7 @@ public class Dispatcher {
      * 
      * @return the total size of the received blocks in the number of bytes.
      */
-    private long getBlockList() throws IOException {
+    private long getBlockList() throws IOException, IllegalArgumentException {
       final long size = Math.min(getBlocksSize, blocksToReceive);
       final BlocksWithLocations newBlksLocs =
           nnc.getBlocks(getDatanodeInfo(), size, getBlocksMinBlockSize);
@@ -830,7 +866,14 @@ public class Dispatcher {
           synchronized (block) {
             block.clearLocations();
 
+            if (blkLocs instanceof StripedBlockWithLocations) {
+              // EC block may adjust indices before, avoid repeated adjustments
+              ((DBlockStriped) block).setIndices(
+                  ((StripedBlockWithLocations) blkLocs).getIndices());
+            }
+
             // update locations
+            List<Integer> adjustList = new ArrayList<>();
             final String[] datanodeUuids = blkLocs.getDatanodeUuids();
             final StorageType[] storageTypes = blkLocs.getStorageTypes();
             for (int i = 0; i < datanodeUuids.length; i++) {
@@ -838,7 +881,19 @@ public class Dispatcher {
                   datanodeUuids[i], storageTypes[i]);
               if (g != null) { // not unknown
                 block.addLocation(g);
+              } else if (blkLocs instanceof StripedBlockWithLocations) {
+                // some datanode may not in storageGroupMap due to decommission operation
+                // or balancer cli with "-exclude" parameter
+                adjustList.add(i);
               }
+            }
+
+            if (!adjustList.isEmpty()) {
+              // block.locations mismatch with block.indices
+              // adjust indices to get correct internalBlock for Datanode in #getInternalBlock
+              ((DBlockStriped) block).adjustIndices(adjustList);
+              Preconditions.checkArgument(((DBlockStriped) block).indices.length
+                  == block.locations.size());
             }
           }
           if (!srcBlocks.contains(block) && isGoodBlockCandidate(block)) {
@@ -927,10 +982,8 @@ public class Dispatcher {
      * move tasks or it has received enough blocks from the namenode, or the
      * elapsed time of the iteration has exceeded the max time limit.
      *
-     * @param delay - time to sleep before sending getBlocks. Intended to
-     * disperse Balancer RPCs to NameNode for large clusters. See HDFS-11384.
      */
-    private void dispatchBlocks(long delay) {
+    private void dispatchBlocks() {
       this.blocksToReceive = 2 * getScheduledSize();
       long previousMoveTimestamp = Time.monotonicNow();
       while (getScheduledSize() > 0 && !isIterationOver()
@@ -955,25 +1008,15 @@ public class Dispatcher {
         if (shouldFetchMoreBlocks()) {
           // fetch new blocks
           try {
-            if(delay > 0) {
-              if (LOG.isDebugEnabled()) {
-                LOG.debug("Sleeping " + delay + "  msec.");
-              }
-              Thread.sleep(delay);
-            }
             final long received = getBlockList();
             if (received == 0) {
               return;
             }
             blocksToReceive -= received;
             continue;
-          } catch (InterruptedException ignored) {
-            // nothing to do
-          } catch (IOException e) {
+          } catch (IOException | IllegalArgumentException e) {
             LOG.warn("Exception while getting reportedBlock list", e);
             return;
-          } finally {
-            delay = 0L;
           }
         } else {
           // jump out of while-loop after the configured timeout.
@@ -1075,6 +1118,10 @@ public class Dispatcher {
     return nnc.getBytesMoved().get();
   }
 
+  long getBblocksMoved() {
+    return nnc.getBlocksMoved().get();
+  }
+
   long bytesToMove() {
     Preconditions.checkState(
         storageGroupMap.size() >= sources.size() + targets.size(),
@@ -1092,6 +1139,14 @@ public class Dispatcher {
   void add(Source source, StorageGroup target) {
     sources.add(source);
     targets.add(target);
+  }
+
+  public int moveTasksTotal() {
+    int b = 0;
+    for (Source src : sources) {
+      b += src.tasks.size();
+    }
+    return b;
   }
 
   private boolean shouldIgnore(DatanodeInfo dn) {
@@ -1120,7 +1175,8 @@ public class Dispatcher {
     final List<DatanodeStorageReport> trimmed = new ArrayList<DatanodeStorageReport>(); 
     // create network topology and classify utilization collections:
     // over-utilized, above-average, below-average and under-utilized.
-    for (DatanodeStorageReport r : DFSUtil.shuffle(reports)) {
+    Collections.shuffle(Arrays.asList(reports));
+    for (DatanodeStorageReport r : reports) {
       final DatanodeInfo datanode = r.getDatanodeInfo();
       if (shouldIgnore(datanode)) {
         continue;
@@ -1165,12 +1221,6 @@ public class Dispatcher {
   }
 
   /**
-   * The best-effort limit on the number of RPCs per second
-   * the Balancer will send to the NameNode.
-   */
-  final static int BALANCER_NUM_RPC_PER_SEC = 20;
-
-  /**
    * Dispatch block moves for each source. The thread selects blocks to move &
    * sends request to proxy source to initiate block move. The process is flow
    * controlled. Block selection is blocked if there are too many un-confirmed
@@ -1180,17 +1230,13 @@ public class Dispatcher {
    */
   private long dispatchBlockMoves() throws InterruptedException {
     final long bytesLastMoved = getBytesMoved();
+    final long blocksLastMoved = getBblocksMoved();
     final Future<?>[] futures = new Future<?>[sources.size()];
 
     int concurrentThreads = Math.min(sources.size(),
         ((ThreadPoolExecutor)dispatchExecutor).getCorePoolSize());
     assert concurrentThreads > 0 : "Number of concurrent threads is 0.";
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("Balancer allowed RPCs per sec = " + BALANCER_NUM_RPC_PER_SEC);
-      LOG.debug("Balancer concurrent threads = " + concurrentThreads);
-      LOG.debug("Disperse Interval sec = " +
-          concurrentThreads / BALANCER_NUM_RPC_PER_SEC);
-    }
+    LOG.info("Balancer concurrent dispatcher threads = {}", concurrentThreads);
 
     // Determine the size of each mover thread pool per target
     int threadsPerTarget = maxMoverThreads/targets.size();
@@ -1210,23 +1256,15 @@ public class Dispatcher {
       LOG.info("Allocating " + threadsPerTarget + " threads per target.");
     }
 
-    long dSec = 0;
     final Iterator<Source> i = sources.iterator();
     for (int j = 0; j < futures.length; j++) {
       final Source s = i.next();
-      final long delay = dSec * 1000;
       futures[j] = dispatchExecutor.submit(new Runnable() {
         @Override
         public void run() {
-          s.dispatchBlocks(delay);
+          s.dispatchBlocks();
         }
       });
-      // Calculate delay in seconds for the next iteration
-      if(j >= concurrentThreads) {
-        dSec = 0;
-      } else if((j + 1) % BALANCER_NUM_RPC_PER_SEC == 0) {
-        dSec++;
-      }
     }
 
     // wait for all dispatcher threads to finish
@@ -1240,6 +1278,9 @@ public class Dispatcher {
 
     // wait for all reportedBlock moving to be done
     waitForMoveCompletion(targets);
+    LOG.info("Total bytes (blocks) moved in this iteration {} ({})",
+        StringUtils.byteDesc(getBytesMoved() - bytesLastMoved),
+        (getBblocksMoved() - blocksLastMoved));
 
     return getBytesMoved() - bytesLastMoved;
   }
@@ -1318,7 +1359,8 @@ public class Dispatcher {
    * 2. the block does not have a replica/internalBlock on the target;
    * 3. doing the move does not reduce the number of racks that the block has
    */
-  private boolean isGoodBlockCandidate(StorageGroup source, StorageGroup target,
+  @VisibleForTesting
+  boolean isGoodBlockCandidate(StorageGroup source, StorageGroup target,
       StorageType targetStorageType, DBlock block) {
     if (source.equals(target)) {
       return false;

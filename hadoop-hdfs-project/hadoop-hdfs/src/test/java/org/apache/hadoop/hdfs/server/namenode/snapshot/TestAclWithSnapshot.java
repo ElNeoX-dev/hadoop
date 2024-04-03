@@ -55,7 +55,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Tests interaction of ACLs with snapshots.
@@ -86,7 +86,7 @@ public class TestAclWithSnapshot {
 
   @AfterClass
   public static void shutdown() throws Exception {
-    IOUtils.cleanup(null, hdfs, fsAsBruce, fsAsDiana);
+    IOUtils.cleanupWithLogger(null, hdfs, fsAsBruce, fsAsDiana);
     if (cluster != null) {
       cluster.shutdown();
     }

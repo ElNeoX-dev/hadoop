@@ -17,10 +17,11 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 import org.apache.hadoop.HadoopIllegalArgumentException;
+import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.XAttr;
 import org.apache.hadoop.fs.XAttrSetFlag;
@@ -28,6 +29,7 @@ import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.XAttrHelper;
+import org.apache.hadoop.hdfs.protocol.XAttrNotFoundException;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ReencryptionInfoProto;
 import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
@@ -42,6 +44,8 @@ import java.util.ListIterator;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_ENCRYPTION_ZONE;
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.SECURITY_XATTR_UNREADABLE_BY_SUPERUSER;
+import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.XATTR_SATISFY_STORAGE_POLICY;
+import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.CRYPTO_XATTR_FILE_ENCRYPTION_INFO;
 
 class FSDirXAttrOp {
   private static final XAttr KEYID_XATTR =
@@ -111,8 +115,7 @@ class FSDirXAttrOp {
       return filteredAll;
     }
     if (filteredAll == null || filteredAll.isEmpty()) {
-      throw new IOException(
-          "At least one of the attributes provided was not found.");
+      throw new XAttrNotFoundException();
     }
     List<XAttr> toGet = Lists.newArrayListWithCapacity(xAttrs.size());
     for (XAttr xAttr : xAttrs) {
@@ -126,8 +129,7 @@ class FSDirXAttrOp {
         }
       }
       if (!foundIt) {
-        throw new IOException(
-            "At least one of the attributes provided was not found.");
+        throw new XAttrNotFoundException();
       }
     }
     return toGet;
@@ -279,6 +281,25 @@ class FSDirXAttrOp {
        * If we're adding the encryption zone xattr, then add src to the list
        * of encryption zones.
        */
+
+      if (CRYPTO_XATTR_FILE_ENCRYPTION_INFO.equals(xaName)) {
+        HdfsProtos.PerFileEncryptionInfoProto fileProto = HdfsProtos.
+                PerFileEncryptionInfoProto.parseFrom(xattr.getValue());
+        String keyVersionName = fileProto.getEzKeyVersionName();
+        String zoneKeyName = fsd.ezManager.getKeyName(iip);
+        if (zoneKeyName == null) {
+          throw new IOException("Cannot add raw feInfo XAttr to a file in a " +
+                  "non-encryption zone");
+        }
+
+        if (!KeyProviderCryptoExtension.
+                getBaseName(keyVersionName).equals(zoneKeyName)) {
+          throw new IllegalArgumentException(String.format(
+                  "KeyVersion '%s' does not belong to the key '%s'",
+                  keyVersionName, zoneKeyName));
+        }
+      }
+
       if (CRYPTO_XATTR_ENCRYPTION_ZONE.equals(xaName)) {
         final HdfsProtos.ZoneEncryptionInfoProto ezProto =
             HdfsProtos.ZoneEncryptionInfoProto.parseFrom(xattr.getValue());
@@ -292,6 +313,12 @@ class FSDirXAttrOp {
           fsd.ezManager.getReencryptionStatus()
               .updateZoneStatus(inode.getId(), iip.getPath(), reProto);
         }
+      }
+
+      // Add inode id to movement queue if xattrs contain satisfy xattr.
+      if (XATTR_SATISFY_STORAGE_POLICY.equals(xaName)) {
+        FSDirSatisfyStoragePolicyOp.unprotectedSatisfyStoragePolicy(inode, fsd);
+        continue;
       }
 
       if (!isFile && SECURITY_XATTR_UNREADABLE_BY_SUPERUSER.equals(xaName)) {

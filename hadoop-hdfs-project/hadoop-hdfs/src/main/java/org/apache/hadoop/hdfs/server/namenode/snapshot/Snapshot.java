@@ -24,23 +24,24 @@ import java.text.SimpleDateFormat;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.Objects;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.AclFeature;
+import org.apache.hadoop.hdfs.server.namenode.INodeDirectoryAttributes;
 import org.apache.hadoop.hdfs.server.namenode.ContentSummaryComputationContext;
+import org.apache.hadoop.hdfs.server.namenode.DirectoryWithQuotaFeature;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormat;
 import org.apache.hadoop.hdfs.server.namenode.FSImageSerialization;
 import org.apache.hadoop.hdfs.server.namenode.INode;
 import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
+import org.apache.hadoop.hdfs.server.namenode.QuotaCounts;
 import org.apache.hadoop.hdfs.server.namenode.XAttrFeature;
 import org.apache.hadoop.hdfs.util.ReadOnlyList;
 
-import com.google.common.base.Predicate;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
 import org.apache.hadoop.security.AccessControlException;
 
 /** Snapshot of a sub-tree in the namesystem. */
@@ -148,21 +149,26 @@ public class Snapshot implements Comparable<byte[]> {
   /** The root directory of the snapshot. */
   static public class Root extends INodeDirectory {
     Root(INodeDirectory other) {
-      // Always preserve ACL, XAttr.
-      super(other, false, Lists.newArrayList(
-        Iterables.filter(Arrays.asList(other.getFeatures()), new Predicate<Feature>() {
-
-          @Override
-          public boolean apply(Feature input) {
-            if (AclFeature.class.isInstance(input) 
-                || XAttrFeature.class.isInstance(input)) {
-              return true;
+      // Always preserve ACL, XAttr and Quota.
+      super(other, false,
+          Arrays.stream(other.getFeatures()).filter(feature ->
+              feature instanceof AclFeature
+                  || feature instanceof XAttrFeature
+                  || feature instanceof DirectoryWithQuotaFeature
+          ).map(feature -> {
+            if (feature instanceof DirectoryWithQuotaFeature) {
+              // Return copy if feature is quota because a ref could be updated
+              final QuotaCounts quota =
+                  ((DirectoryWithQuotaFeature) feature).getSpaceAllowed();
+              return new DirectoryWithQuotaFeature.Builder()
+                  .nameSpaceQuota(quota.getNameSpace())
+                  .storageSpaceQuota(quota.getStorageSpace())
+                  .typeQuotas(quota.getTypeSpaces())
+                  .build();
+            } else {
+              return feature;
             }
-            return false;
-          }
-          
-        }))
-        .toArray(new Feature[0]));
+          }).toArray(Feature[]::new));
     }
 
     @Override
@@ -180,6 +186,18 @@ public class Snapshot implements Comparable<byte[]> {
         int snapshotId, ContentSummaryComputationContext summary)
         throws AccessControlException {
       return computeDirectoryContentSummary(summary, snapshotId);
+    }
+
+    @Override
+    public boolean metadataEquals(INodeDirectoryAttributes other) {
+      return other != null && getQuotaCounts().equals(other.getQuotaCounts())
+          && getPermissionLong() == other.getPermissionLong()
+          // Acl feature maintains a reference counted map, thereby
+          // every snapshot copy should point to the same Acl object unless
+          // there is no change in acl values.
+          // Reference equals is hence intentional here.
+          && getAclFeature() == other.getAclFeature()
+          && Objects.equals(getXAttrFeature(), other.getXAttrFeature());
     }
 
     @Override

@@ -209,12 +209,12 @@
       <excludes>
         <exclude>org.apache.hadoop:hadoop-common</exclude>
         <exclude>org.apache.hadoop:hadoop-hdfs</exclude>
-        <exclude>org.apache.hadoop:hadoop-mapreduce</exclude>
+        <exclude>org.apache.hadoop:hadoop-client</exclude>
         <!-- pipes is native stuff, this just keeps pom from being package-->
         <exclude>org.apache.hadoop:hadoop-pipes</exclude>
         <!-- use slf4j from common to avoid multiple binding warnings -->
         <exclude>org.slf4j:slf4j-api</exclude>
-        <exclude>org.slf4j:slf4j-log4j12</exclude>
+        <exclude>org.slf4j:slf4j-reload4j</exclude>
       </excludes>
     </dependencySet>
   </dependencySets>

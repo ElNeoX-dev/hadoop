@@ -37,8 +37,8 @@ import java.util.SortedSet;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.hdfs.qjournal.MiniJournalCluster;
@@ -51,7 +51,7 @@ import org.apache.hadoop.hdfs.server.namenode.NameNodeLayoutVersion;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.util.Holder;
 import org.apache.hadoop.io.IOUtils;
-import org.apache.hadoop.ipc.ProtobufRpcEngine;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.log4j.Level;
 import org.junit.Rule;
@@ -61,13 +61,13 @@ import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 
 
 public class TestQJMWithFaults {
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
       TestQJMWithFaults.class);
 
   private static final String RAND_SEED_PROPERTY =
@@ -105,7 +105,7 @@ public class TestQJMWithFaults {
     long ret;
     try {
       qjm = createInjectableQJM(cluster);
-      qjm.format(FAKE_NSINFO);
+      qjm.format(FAKE_NSINFO, false);
       doWorkload(cluster, qjm);
       
       SortedSet<Integer> ipcCounts = Sets.newTreeSet();
@@ -156,7 +156,7 @@ public class TestQJMWithFaults {
         QuorumJournalManager qjm = null;
         try {
           qjm = createInjectableQJM(cluster);
-          qjm.format(FAKE_NSINFO);
+          qjm.format(FAKE_NSINFO, false);
           List<AsyncLogger> loggers = qjm.getLoggerSetForTests().getLoggersForTests();
           failIpcNumber(loggers.get(0), failA);
           failIpcNumber(loggers.get(1), failB);
@@ -198,7 +198,7 @@ public class TestQJMWithFaults {
   public void testUnresolvableHostName() throws Exception {
     expectedException.expect(UnknownHostException.class);
     new QuorumJournalManager(conf,
-        new URI("qjournal://" + "bogus:12345" + "/" + JID), FAKE_NSINFO);
+        new URI("qjournal://" + "bogus.invalid:12345" + "/" + JID), FAKE_NSINFO);
   }
 
   /**
@@ -225,7 +225,7 @@ public class TestQJMWithFaults {
       // If the user specifies a seed, then we should gather all the
       // IPC trace information so that debugging is easier. This makes
       // the test run about 25% slower otherwise.
-      GenericTestUtils.setLogLevel(ProtobufRpcEngine.LOG, Level.ALL);
+      GenericTestUtils.setLogLevel(ProtobufRpcEngine2.LOG, Level.ALL);
     } else {
       seed = new Random().nextLong();
     }
@@ -240,7 +240,7 @@ public class TestQJMWithFaults {
     // Format the cluster using a non-faulty QJM.
     QuorumJournalManager qjmForInitialFormat =
         createInjectableQJM(cluster);
-    qjmForInitialFormat.format(FAKE_NSINFO);
+    qjmForInitialFormat.format(FAKE_NSINFO, false);
     qjmForInitialFormat.close();
     
     try {

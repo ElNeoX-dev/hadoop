@@ -27,6 +27,7 @@ package org.apache.hadoop.io.compress.bzip2;
 import java.io.OutputStream;
 import java.io.IOException;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.io.IOUtils;
 
 /**
@@ -64,11 +65,9 @@ import org.apache.hadoop.io.IOUtils;
  * </pre>
  *
  * <table width="100%" border="1">
- * <colgroup> <col width="33%" /> <col width="33%" /> <col width="33%" />
+ * <caption>Memory usage by blocksize</caption>
+ * <colgroup> <col width="33%" > <col width="33%" > <col width="33%" >
  * </colgroup>
- * <tr>
- * <th colspan="3">Memory usage by blocksize</th>
- * </tr>
  * <tr>
  * <th align="right">Blocksize</th> <th align="right">Compression<br>
  * memory usage</th> <th align="right">Decompression<br>
@@ -212,6 +211,10 @@ public class CBZip2OutputStream extends OutputStream implements BZip2Constants {
   /**
   * This method is accessible by subclasses for historical purposes. If you
   * don't know what it does then you don't need it.
+  * @param len len.
+  * @param freq freq.
+  * @param alphaSize alphaSize.
+  * @param maxLen maxLen.
   */
   protected static void hbMakeCodeLengths(char[] len, int[] freq,
       int alphaSize, int maxLen) {
@@ -614,9 +617,9 @@ public class CBZip2OutputStream extends OutputStream implements BZip2Constants {
   * @throws IOException
   *             if an I/O error occurs in the specified stream.
   * @throws IllegalArgumentException
-  *             if <code>(blockSize < 1) || (blockSize > 9)</code>.
+  *             if {@code (blockSize < 1) || (blockSize > 9)}
   * @throws NullPointerException
-  *             if <code>out == null</code>.
+  *             if {@code out == null}.
   *
   * @see #MIN_BLOCKSIZE
   * @see #MAX_BLOCKSIZE
@@ -779,8 +782,7 @@ public class CBZip2OutputStream extends OutputStream implements BZip2Constants {
       inUse[i] = false;
     }
 
-    /* 20 is just a paranoia constant */
-    this.allowableBlockSize = (this.blockSize100k * BZip2Constants.baseBlockSize) - 20;
+    this.allowableBlockSize = getAllowableBlockSize(this.blockSize100k);
   }
 
   private void endBlock() throws IOException {
@@ -848,6 +850,7 @@ public class CBZip2OutputStream extends OutputStream implements BZip2Constants {
 
   /**
   * Returns the blocksize parameter specified at construction time.
+  * @return blocksize.
   */
   public final int getBlockSize() {
     return this.blockSize100k;
@@ -2090,4 +2093,9 @@ public class CBZip2OutputStream extends OutputStream implements BZip2Constants {
 
   }
 
+  @VisibleForTesting
+  static int getAllowableBlockSize(int blockSize100k) {
+    /* 20 is just a paranoia constant */
+    return (blockSize100k * BZip2Constants.baseBlockSize) - 20;
+  }
 }

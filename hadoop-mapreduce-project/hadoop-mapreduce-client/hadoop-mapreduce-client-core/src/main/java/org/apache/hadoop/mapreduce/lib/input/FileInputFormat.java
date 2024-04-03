@@ -19,6 +19,7 @@
 package org.apache.hadoop.mapreduce.lib.input;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -46,7 +47,7 @@ import org.apache.hadoop.util.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /** 
  * A base class for file-based {@link InputFormat}s.
@@ -233,11 +234,15 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
         (PathFilter) ReflectionUtils.newInstance(filterClass, conf) : null;
   }
 
-  /** List input directories.
+  /**
+   * List input directories.
    * Subclasses may override to, e.g., select only files matching a regular
    * expression. 
-   * 
-   * @param job the job to list input paths for
+   *
+   * If security is enabled, this method collects
+   * delegation tokens from the input paths and adds them to the job's
+   * credentials.
+   * @param job the job to list input paths for and attach tokens to.
    * @return array of FileStatus objects
    * @throws IOException if zero items.
    */
@@ -279,7 +284,10 @@ public abstract class FileInputFormat<K, V> extends InputFormat<K, V> {
             job.getConfiguration(), dirs, recursive, inputFilter, true);
         locatedFiles = locatedFileStatusFetcher.getFileStatuses();
       } catch (InterruptedException e) {
-        throw new IOException("Interrupted while getting file statuses");
+        throw (IOException)
+            new InterruptedIOException(
+                "Interrupted while getting file statuses")
+                .initCause(e);
       }
       result = Lists.newArrayList(locatedFiles);
     }

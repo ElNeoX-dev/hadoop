@@ -28,7 +28,7 @@ import org.apache.hadoop.ha.HAServiceProtocol.StateChangeRequestInfo;
 import org.apache.hadoop.ha.HAServiceProtocol.RequestSource;
 import org.apache.hadoop.ipc.RPC;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -129,7 +129,7 @@ public class FailoverController {
 
     if (!toSvcStatus.getState().equals(HAServiceState.STANDBY)) {
       throw new FailoverFailedException(
-          "Can't failover to an active service");
+          "Can't failover to an " + toSvcStatus.getState() + " service");
     }
     
     if (!toSvcStatus.isReadyToBecomeActive()) {
@@ -213,7 +213,7 @@ public class FailoverController {
 
     // Fence fromSvc if it's required or forced by the user
     if (tryFence) {
-      if (!fromSvc.getFencer().fence(fromSvc)) {
+      if (!fromSvc.getFencer().fence(fromSvc, toSvc)) {
         throw new FailoverFailedException("Unable to fence " +
             fromSvc + ". Fencing failed.");
       }

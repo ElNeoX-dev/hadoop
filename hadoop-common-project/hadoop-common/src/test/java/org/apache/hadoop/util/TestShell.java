@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.util;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.security.alias.AbstractJavaKeyStoreProvider;
 import org.junit.Assert;
@@ -27,6 +27,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
@@ -38,6 +39,8 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.test.GenericTestUtils;
 
 import static org.apache.hadoop.util.Shell.*;
+import static org.junit.Assume.assumeTrue;
+
 import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Rule;
@@ -47,7 +50,7 @@ import org.junit.rules.Timeout;
 
 public class TestShell extends Assert {
   /**
-   * Set the timeout for every test
+   * Set the timeout for every test.
    */
   @Rule
   public Timeout testTimeout = new Timeout(30000);
@@ -527,5 +530,10 @@ public class TestShell extends Assert {
   @Test
   public void testIsJavaVersionAtLeast() {
     assertTrue(Shell.isJavaVersionAtLeast(8));
+  }
+
+  @Test
+  public void testIsBashSupported() throws InterruptedIOException {
+    assumeTrue("Bash is not supported", Shell.checkIsBashSupported());
   }
 }

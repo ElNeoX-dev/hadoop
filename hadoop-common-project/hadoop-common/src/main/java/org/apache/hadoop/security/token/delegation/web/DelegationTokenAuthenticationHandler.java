@@ -54,12 +54,12 @@ import org.slf4j.LoggerFactory;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 /**
  * An {@link AuthenticationHandler} that implements Kerberos SPNEGO mechanism
  * for HTTP and supports Delegation Token functionality.
- * <p/>
+ * <p>
  * In addition to the wrapped {@link AuthenticationHandler} configuration
  * properties, this handler supports the following properties prefixed
  * with the type of the wrapped <code>AuthenticationHandler</code>:
@@ -135,7 +135,7 @@ public abstract class DelegationTokenAuthenticationHandler
   /**
    * Sets an external <code>DelegationTokenSecretManager</code> instance to
    * manage creation and verification of Delegation Tokens.
-   * <p/>
+   * <p>
    * This is useful for use cases where secrets must be shared across multiple
    * services.
    *

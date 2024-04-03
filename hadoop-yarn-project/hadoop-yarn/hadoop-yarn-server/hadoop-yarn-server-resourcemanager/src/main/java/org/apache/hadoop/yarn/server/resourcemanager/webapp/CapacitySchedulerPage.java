@@ -103,7 +103,7 @@ class CapacitySchedulerPage extends RmView {
           ? NodeLabel.DEFAULT_NODE_LABEL_PARTITION : nodeLabel;
       // first display the queue's label specific details :
       ResponseInfo ri =
-          info("\'" + lqinfo.getQueuePath().substring(5)
+          info("\'" + lqinfo.getQueuePath()
               + "\' Queue Status for Partition \'" + nodeLabelDisplay + "\'");
       renderQueueCapacityInfo(ri, nodeLabel);
       html.__(InfoBlock.class);
@@ -113,7 +113,7 @@ class CapacitySchedulerPage extends RmView {
 
       // second display the queue specific details :
       ri =
-          info("\'" + lqinfo.getQueuePath().substring(5) + "\' Queue Status")
+          info("\'" + lqinfo.getQueuePath() + "\' Queue Status")
               .__("Queue State:", lqinfo.getQueueState());
       renderCommonLeafQueueInfo(ri);
 
@@ -125,7 +125,7 @@ class CapacitySchedulerPage extends RmView {
 
     private void renderLeafQueueInfoWithoutParition(Block html) {
       ResponseInfo ri =
-          info("\'" + lqinfo.getQueuePath().substring(5) + "\' Queue Status")
+          info("\'" + lqinfo.getQueuePath() + "\' Queue Status")
               .__("Queue State:", lqinfo.getQueueState());
       renderQueueCapacityInfo(ri, "");
       renderCommonLeafQueueInfo(ri);
@@ -157,10 +157,12 @@ class CapacitySchedulerPage extends RmView {
           : resourceUsages.getAmUsed();
       ri.
           __("Used Capacity:",
-              appendPercent(resourceUsages.getUsed().toString(),
+              appendPercent(resourceUsages.getUsed(),
                   capacities.getUsedCapacity() / 100))
           .__("Configured Capacity:",
-              capacities.getConfiguredMinResource().toString())
+              capacities.getConfiguredMinResource() == null ?
+                  Resources.none().toString() :
+                  capacities.getConfiguredMinResource().toString())
           .__("Configured Max Capacity:",
               (capacities.getConfiguredMaxResource() == null
                   || capacities.getConfiguredMaxResource().getResource()
@@ -168,10 +170,10 @@ class CapacitySchedulerPage extends RmView {
                           ? "unlimited"
                           : capacities.getConfiguredMaxResource().toString())
           .__("Effective Capacity:",
-              appendPercent(capacities.getEffectiveMinResource().toString(),
+              appendPercent(capacities.getEffectiveMinResource(),
                   capacities.getCapacity() / 100))
           .__("Effective Max Capacity:",
-              appendPercent(capacities.getEffectiveMaxResource().toString(),
+              appendPercent(capacities.getEffectiveMaxResource(),
                   capacities.getMaxCapacity() / 100))
           .__("Absolute Used Capacity:",
               percent(capacities.getAbsoluteUsedCapacity() / 100))
@@ -199,7 +201,7 @@ class CapacitySchedulerPage extends RmView {
           __("Configured Minimum User Limit Percent:", Integer.toString(lqinfo.getUserLimit()) + "%").
           __("Configured User Limit Factor:", lqinfo.getUserLimitFactor()).
           __("Accessible Node Labels:", StringUtils.join(",", lqinfo.getNodeLabels())).
-          __("Ordering Policy: ", lqinfo.getOrderingPolicyInfo()).
+          __("Ordering Policy: ", lqinfo.getOrderingPolicyDisplayName()).
           __("Preemption:",
               lqinfo.getPreemptionDisabled() ? "disabled" : "enabled").
           __("Intra-queue Preemption:", lqinfo.getIntraQueuePreemptionDisabled()
@@ -320,6 +322,8 @@ class CapacitySchedulerPage extends RmView {
         boolean isAutoCreatedLeafQueue = info.isLeafQueue() ?
             ((CapacitySchedulerLeafQueueInfo) info).isAutoCreatedLeafQueue()
             : false;
+        float capPercent = absMaxCap == 0 ? 0 : absCap/absMaxCap;
+        float usedCapPercent = absMaxCap == 0 ? 0 : absUsedCap/absMaxCap;
 
         String Q_WIDTH = width(absMaxCap * Q_MAX_WIDTH);
         LI<UL<Hamlet>> li = ul.
@@ -328,12 +332,12 @@ class CapacitySchedulerPage extends RmView {
             Q_WIDTH)
             :  Q_WIDTH).
               $title(join("Absolute Capacity:", percent(absCap))).
-              span().$style(join(Q_GIVEN, ";font-size:1px;", width(absCap/absMaxCap))).
+              span().$style(join(Q_GIVEN, ";font-size:1px;", width(capPercent))).
             __('.').__().
-              span().$style(join(width(absUsedCap/absMaxCap),
+              span().$style(join(width(usedCapPercent),
                 ";font-size:1px;left:0%;", absUsedCap > absCap ? Q_OVER : Q_UNDER)).
             __('.').__().
-              span(".q", "Queue: "+info.getQueuePath().substring(5)).__().
+              span(".q", info.getQueuePath()).__().
             span().$class("qstats").$style(left(Q_STATS_POS)).
             __(join(percent(used), " used")).__();
 
@@ -477,7 +481,7 @@ class CapacitySchedulerPage extends RmView {
             a(_Q).$style(width(Q_MAX_WIDTH)).
               span().$style(join(width(used), ";left:0%;",
                   used > 1 ? Q_OVER : Q_UNDER)).__(".").__().
-              span(".q", "Queue: root").__().
+              span(".q", "root").__().
             span().$class("qstats").$style(left(Q_STATS_POS)).
               __(join(percent(used), " used")).__().
               __(QueueBlock.class).__();
@@ -507,7 +511,7 @@ class CapacitySchedulerPage extends RmView {
             a(_Q).$style(width(Q_MAX_WIDTH)).
               span().$style(join(width(used), ";left:0%;",
                   used > 1 ? Q_OVER : Q_UNDER)).__(".").__().
-              span(".q", "Queue: root").__().
+              span(".q", "root").__().
             span().$class("qstats").$style(left(Q_STATS_POS)).
                 __(join(percent(used), " used")).__().
                 __(QueueBlock.class).__().__();
@@ -641,12 +645,9 @@ class CapacitySchedulerPage extends RmView {
           "    }",
           "  });",
           "  $('#cs').bind('select_node.jstree', function(e, data) {",
-          "    var q = $('.q', data.rslt.obj).first().text();",
-          "    if (q == 'Queue: root') q = '';",
-          "    else {",
-          "      q = q.substr(q.lastIndexOf(':') + 2);",
-          "      q = '^' + q.substr(q.lastIndexOf('.') + 1) + '$';",
-          "    }",
+          "    var queues = $('.q', data.rslt.obj);",
+          "    var q = '^' + queues.first().text();",
+          "    q += queues.length == 1 ? '$' : '\\\\.';",
           "    $('#apps').dataTable().fnFilter(q, 4, true);",
           "  });",
           "  $('#cs').show();",
@@ -658,8 +659,12 @@ class CapacitySchedulerPage extends RmView {
     return QueuesBlock.class;
   }
 
-  static String appendPercent(String message, float f) {
-    return message + " (" + StringUtils.formatPercent(f, 1) + ")";
+  static String appendPercent(ResourceInfo resourceInfo, float f) {
+    if (resourceInfo == null) {
+      return "";
+    }
+    return resourceInfo.toString() + " ("
+        + StringUtils.formatPercent(f, 1) + ")";
   }
 
   static String percent(float f) {

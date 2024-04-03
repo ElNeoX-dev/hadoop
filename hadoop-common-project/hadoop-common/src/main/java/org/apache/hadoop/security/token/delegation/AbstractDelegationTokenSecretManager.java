@@ -19,21 +19,35 @@
 package org.apache.hadoop.security.token.delegation;
 
 import java.io.ByteArrayInputStream;
+import java.io.DataInput;
 import java.io.DataInputStream;
+import java.io.DataOutput;
 import java.io.IOException;
 import java.security.MessageDigest;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.SecretKey;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.statistics.DurationTracker;
+import org.apache.hadoop.fs.statistics.DurationTrackerFactory;
+import org.apache.hadoop.fs.statistics.impl.IOStatisticsBinding;
+import org.apache.hadoop.fs.statistics.impl.IOStatisticsStore;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
+import org.apache.hadoop.io.WritableUtils;
+import org.apache.hadoop.metrics2.annotation.Metric;
+import org.apache.hadoop.metrics2.annotation.Metrics;
+import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.lib.MetricsRegistry;
+import org.apache.hadoop.metrics2.lib.MutableCounterLong;
+import org.apache.hadoop.metrics2.lib.MutableRate;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.HadoopKerberosName;
 import org.apache.hadoop.security.token.SecretManager;
@@ -41,18 +55,24 @@ import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.Time;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.util.functional.InvocationRaisingIOE;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @InterfaceAudience.Public
 @InterfaceStability.Evolving
-public abstract 
-class AbstractDelegationTokenSecretManager<TokenIdent 
-extends AbstractDelegationTokenIdentifier> 
-   extends SecretManager<TokenIdent> {
+public abstract class AbstractDelegationTokenSecretManager<TokenIdent
+    extends AbstractDelegationTokenIdentifier>
+    extends SecretManager<TokenIdent> {
   private static final Logger LOG = LoggerFactory
       .getLogger(AbstractDelegationTokenSecretManager.class);
+
+  /**
+   * Metrics to track token management operations.
+   */
+  private static final DelegationTokenSecretManagerMetrics METRICS
+      = DelegationTokenSecretManagerMetrics.create();
 
   private String formatTokenId(TokenIdent id) {
     return "(" + id + ")";
@@ -63,7 +83,7 @@ extends AbstractDelegationTokenIdentifier>
    * to DelegationTokenInformation. Protected by this object lock.
    */
   protected final Map<TokenIdent, DelegationTokenInformation> currentTokens 
-      = new HashMap<TokenIdent, DelegationTokenInformation>();
+      = new ConcurrentHashMap<>();
   
   /**
    * Sequence number to create DelegationTokenIdentifier.
@@ -72,17 +92,17 @@ extends AbstractDelegationTokenIdentifier>
   protected int delegationTokenSequenceNumber = 0;
   
   /**
-   * Access to allKeys is protected by this object lock
+   * Access to allKeys is protected by this object lock.
    */
   protected final Map<Integer, DelegationKey> allKeys 
-      = new HashMap<Integer, DelegationKey>();
+      = new ConcurrentHashMap<>();
   
   /**
    * Access to currentId is protected by this object lock.
    */
   protected int currentId = 0;
   /**
-   * Access to currentKey is protected by this object lock
+   * Access to currentKey is protected by this object lock.
    */
   private DelegationKey currentKey;
   
@@ -105,7 +125,7 @@ extends AbstractDelegationTokenIdentifier>
   protected Object noInterruptsLock = new Object();
 
   /**
-   * Create a secret manager
+   * Create a secret manager.
    * @param delegationKeyUpdateInterval the number of milliseconds for rolling
    *        new secret keys.
    * @param delegationTokenMaxLifetime the maximum lifetime of the delegation
@@ -125,7 +145,10 @@ extends AbstractDelegationTokenIdentifier>
     this.storeTokenTrackingId = false;
   }
 
-  /** should be called before this object is used */
+  /**
+   * should be called before this object is used.
+   * @throws IOException raised on errors performing I/O.
+   */
   public void startThreads() throws IOException {
     Preconditions.checkState(!running);
     updateCurrentKey();
@@ -145,14 +168,27 @@ extends AbstractDelegationTokenIdentifier>
     setDelegationTokenSeqNum(0);
     currentTokens.clear();
   }
-  
+
+  /**
+   * Total count of active delegation tokens.
+   *
+   * @return currentTokens.size.
+   */
+  public long getCurrentTokensSize() {
+    return currentTokens.size();
+  }
+
   /** 
    * Add a previously used master key to cache (when NN restarts), 
-   * should be called before activate(). 
-   * */
+   * should be called before activate().
+   *
+   * @param key delegation key.
+   * @throws IOException raised on errors performing I/O.
+   */
   public synchronized void addKey(DelegationKey key) throws IOException {
-    if (running) // a safety check
+    if (running) { // a safety check
       throw new IOException("Can't add delegation key to a running SecretManager.");
+    }
     if (key.getKeyId() > getCurrentKeyId()) {
       setCurrentKeyId(key.getKeyId());
     }
@@ -199,7 +235,9 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @return currentId.
    */
   protected synchronized int getCurrentKeyId() {
     return currentId;
@@ -207,7 +245,9 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @return currentId.
    */
   protected synchronized int incrementCurrentKeyId() {
     return ++currentId;
@@ -215,7 +255,9 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param keyId keyId.
    */
   protected synchronized void setCurrentKeyId(int keyId) {
     currentId = keyId;
@@ -223,7 +265,9 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @return delegationTokenSequenceNumber.
    */
   protected synchronized int getDelegationTokenSeqNum() {
     return delegationTokenSequenceNumber;
@@ -231,7 +275,9 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @return delegationTokenSequenceNumber.
    */
   protected synchronized int incrementDelegationTokenSeqNum() {
     return ++delegationTokenSequenceNumber;
@@ -239,7 +285,9 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param seqNum seqNum.
    */
   protected synchronized void setDelegationTokenSeqNum(int seqNum) {
     delegationTokenSequenceNumber = seqNum;
@@ -247,7 +295,10 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param keyId keyId.
+   * @return DelegationKey.
    */
   protected DelegationKey getDelegationKey(int keyId) {
     return allKeys.get(keyId);
@@ -255,7 +306,10 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param key DelegationKey.
+   * @throws IOException raised on errors performing I/O.
    */
   protected void storeDelegationKey(DelegationKey key) throws IOException {
     allKeys.put(key.getKeyId(), key);
@@ -264,7 +318,10 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param key DelegationKey.
+   * @throws IOException raised on errors performing I/O.
    */
   protected void updateDelegationKey(DelegationKey key) throws IOException {
     allKeys.put(key.getKeyId(), key);
@@ -273,6 +330,9 @@ extends AbstractDelegationTokenIdentifier>
   /**
    * For subclasses externalizing the storage, for example Zookeeper
    * based implementations
+   *
+   * @param ident ident.
+   * @return DelegationTokenInformation.
    */
   protected DelegationTokenInformation getTokenInfo(TokenIdent ident) {
     return currentTokens.get(ident);
@@ -280,7 +340,11 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param ident ident.
+   * @param tokenInfo tokenInfo.
+   * @throws IOException raised on errors performing I/O.
    */
   protected void storeToken(TokenIdent ident,
       DelegationTokenInformation tokenInfo) throws IOException {
@@ -290,7 +354,11 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * For subclasses externalizing the storage, for example Zookeeper
-   * based implementations
+   * based implementations.
+   *
+   * @param ident ident.
+   * @param tokenInfo tokenInfo.
+   * @throws IOException raised on errors performing I/O.
    */
   protected void updateToken(TokenIdent ident,
       DelegationTokenInformation tokenInfo) throws IOException {
@@ -300,12 +368,13 @@ extends AbstractDelegationTokenIdentifier>
 
   /**
    * This method is intended to be used for recovering persisted delegation
-   * tokens
+   * tokens. Tokens that have an unknown <code>DelegationKey</code> are
+   * marked as expired and automatically cleaned up.
    * This method must be called before this secret manager is activated (before
    * startThreads() is called)
    * @param identifier identifier read from persistent storage
    * @param renewDate token renew time
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public synchronized void addPersistedDelegationToken(
       TokenIdent identifier, long renewDate) throws IOException {
@@ -316,12 +385,15 @@ extends AbstractDelegationTokenIdentifier>
     }
     int keyId = identifier.getMasterKeyId();
     DelegationKey dKey = allKeys.get(keyId);
+    byte[] password = null;
     if (dKey == null) {
-      LOG.warn("No KEY found for persisted identifier "
+      LOG.warn("No KEY found for persisted identifier, expiring stored token "
           + formatTokenId(identifier));
-      return;
+      // make sure the token is expired
+      renewDate = 0L;
+    } else {
+      password = createPassword(identifier.getBytes(), dKey.getKey());
     }
-    byte[] password = createPassword(identifier.getBytes(), dKey.getKey());
     if (identifier.getSequenceNumber() > getDelegationTokenSeqNum()) {
       setDelegationTokenSeqNum(identifier.getSequenceNumber());
     }
@@ -360,8 +432,9 @@ extends AbstractDelegationTokenIdentifier>
   /** 
    * Update the current master key for generating delegation tokens 
    * It should be called only by tokenRemoverThread.
+   * @throws IOException raised on errors performing I/O.
    */
-  void rollMasterKey() throws IOException {
+  protected void rollMasterKey() throws IOException {
     synchronized (this) {
       removeExpiredKeys();
       /* set final expiry date for retiring currentKey */
@@ -385,8 +458,9 @@ extends AbstractDelegationTokenIdentifier>
         it.remove();
         // ensure the tokens generated by this current key can be recovered
         // with this current key after this current key is rolled
-        if(!e.getValue().equals(currentKey))
+        if(!e.getValue().equals(currentKey)) {
           removeStoredMasterKey(e.getValue());
+        }
       }
     }
   }
@@ -406,7 +480,7 @@ extends AbstractDelegationTokenIdentifier>
     DelegationTokenInformation tokenInfo = new DelegationTokenInformation(now
         + tokenRenewInterval, password, getTrackingIdIfEnabled(identifier));
     try {
-      storeToken(identifier, tokenInfo);
+      METRICS.trackStoreToken(() -> storeToken(identifier, tokenInfo));
     } catch (IOException ioe) {
       LOG.error("Could not store token " + formatTokenId(identifier) + "!!",
           ioe);
@@ -420,20 +494,28 @@ extends AbstractDelegationTokenIdentifier>
    * Find the DelegationTokenInformation for the given token id, and verify that
    * if the token is expired. Note that this method should be called with 
    * acquiring the secret manager's monitor.
+   *
+   * @param identifier identifier.
+   * @throws InvalidToken invalid token exception.
+   * @return DelegationTokenInformation.
    */
   protected DelegationTokenInformation checkToken(TokenIdent identifier)
       throws InvalidToken {
     assert Thread.holdsLock(this);
     DelegationTokenInformation info = getTokenInfo(identifier);
+    String err;
     if (info == null) {
-      throw new InvalidToken("token " + formatTokenId(identifier)
-          + " can't be found in cache");
+      err = "Token for real user: " + identifier.getRealUser() + ", can't be found in cache";
+      LOG.warn("{}, Token={}", err, formatTokenId(identifier));
+      throw new InvalidToken(err);
     }
     long now = Time.now();
     if (info.getRenewDate() < now) {
-      throw new InvalidToken("token " + formatTokenId(identifier) + " is " +
-          "expired, current time: " + Time.formatTime(now) +
-          " expected renewal time: " + Time.formatTime(info.getRenewDate()));
+      err = "Token " + identifier.getRealUser() + " has expired, current time: "
+          + Time.formatTime(now) + " expected renewal time: " + Time
+          .formatTime(info.getRenewDate());
+      LOG.info("{}, Token={}", err, formatTokenId(identifier));
+      throw new InvalidToken(err);
     }
     return info;
   }
@@ -463,7 +545,7 @@ extends AbstractDelegationTokenIdentifier>
    * Verifies that the given identifier and password are valid and match.
    * @param identifier Token identifier.
    * @param password Password in the token.
-   * @throws InvalidToken
+   * @throws InvalidToken InvalidToken.
    */
   public synchronized void verifyToken(TokenIdent identifier, byte[] password)
       throws InvalidToken {
@@ -531,12 +613,15 @@ extends AbstractDelegationTokenIdentifier>
       throw new InvalidToken("Renewal request for unknown token "
           + formatTokenId(id));
     }
-    updateToken(id, info);
+    METRICS.trackUpdateToken(() -> updateToken(id, info));
     return renewTime;
   }
   
   /**
    * Cancel a token by removing it from cache.
+   *
+   * @param token token.
+   * @param canceller canceller.
    * @return Identifier of the canceled token
    * @throws InvalidToken for invalid token
    * @throws AccessControlException if the user isn't allowed to cancel
@@ -567,7 +652,9 @@ extends AbstractDelegationTokenIdentifier>
     if (info == null) {
       throw new InvalidToken("Token not found " + formatTokenId(id));
     }
-    removeStoredToken(id);
+    METRICS.trackRemoveToken(() -> {
+      removeStoredToken(id);
+    });
     return id;
   }
   
@@ -582,10 +669,14 @@ extends AbstractDelegationTokenIdentifier>
 
   /** Class to encapsulate a token's renew date and password. */
   @InterfaceStability.Evolving
-  public static class DelegationTokenInformation {
+  public static class DelegationTokenInformation implements Writable {
     long renewDate;
     byte[] password;
     String trackingId;
+
+    public DelegationTokenInformation() {
+      this(0, null);
+    }
 
     public DelegationTokenInformation(long renewDate, byte[] password) {
       this(renewDate, password, null);
@@ -597,17 +688,47 @@ extends AbstractDelegationTokenIdentifier>
       this.password = password;
       this.trackingId = trackingId;
     }
-    /** returns renew date */
+    /**
+     * @return returns renew date.
+     */
     public long getRenewDate() {
       return renewDate;
     }
-    /** returns password */
+    /**
+     * @return returns password.
+     */
     byte[] getPassword() {
       return password;
     }
-    /** returns tracking id */
+
+    /**
+     * @return returns tracking id.
+     */
     public String getTrackingId() {
       return trackingId;
+    }
+
+    @Override
+    public void write(DataOutput out) throws IOException {
+      WritableUtils.writeVLong(out, renewDate);
+      if (password == null) {
+        WritableUtils.writeVInt(out, -1);
+      } else {
+        WritableUtils.writeVInt(out, password.length);
+        out.write(password);
+      }
+      WritableUtils.writeString(out, trackingId);
+    }
+
+    @Override
+    public void readFields(DataInput in) throws IOException {
+      renewDate = WritableUtils.readVLong(in);
+      int len = WritableUtils.readVInt(in);
+      if (len > -1) {
+        password = new byte[len];
+        in.readFully(password);
+      }
+      trackingId = WritableUtils.readString(in);
     }
   }
   
@@ -641,8 +762,9 @@ extends AbstractDelegationTokenIdentifier>
   }
 
   public void stopThreads() {
-    if (LOG.isDebugEnabled())
+    if (LOG.isDebugEnabled()) {
       LOG.debug("Stopping expired delegation token remover thread");
+    }
     running = false;
     
     if (tokenRemoverThread != null) {
@@ -709,10 +831,102 @@ extends AbstractDelegationTokenIdentifier>
    * 
    * @param token the token where to extract the identifier
    * @return the delegation token identifier
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public TokenIdent decodeTokenIdentifier(Token<TokenIdent> token) throws IOException {
     return token.decodeIdentifier();
   }
 
+  protected DelegationTokenSecretManagerMetrics getMetrics() {
+    return METRICS;
+  }
+
+  /**
+   * DelegationTokenSecretManagerMetrics tracks token management operations
+   * and publishes them through the metrics interfaces.
+   */
+  @Metrics(about="Delegation token secret manager metrics", context="token")
+  static class DelegationTokenSecretManagerMetrics implements DurationTrackerFactory {
+    private static final Logger LOG = LoggerFactory.getLogger(
+        DelegationTokenSecretManagerMetrics.class);
+
+    final static String STORE_TOKEN_STAT = "storeToken";
+    final static String UPDATE_TOKEN_STAT = "updateToken";
+    final static String REMOVE_TOKEN_STAT = "removeToken";
+    final static String TOKEN_FAILURE_STAT = "tokenFailure";
+
+    private final MetricsRegistry registry;
+    private final IOStatisticsStore ioStatistics;
+
+    @Metric("Rate of storage of delegation tokens and latency (milliseconds)")
+    private MutableRate storeToken;
+    @Metric("Rate of update of delegation tokens and latency (milliseconds)")
+    private MutableRate updateToken;
+    @Metric("Rate of removal of delegation tokens and latency (milliseconds)")
+    private MutableRate removeToken;
+    @Metric("Counter of delegation tokens operation failures")
+    private MutableCounterLong tokenFailure;
+
+    static DelegationTokenSecretManagerMetrics create() {
+      return DefaultMetricsSystem.instance().register(new DelegationTokenSecretManagerMetrics());
+    }
+
+    DelegationTokenSecretManagerMetrics() {
+      ioStatistics = IOStatisticsBinding.iostatisticsStore()
+          .withDurationTracking(STORE_TOKEN_STAT, UPDATE_TOKEN_STAT, REMOVE_TOKEN_STAT)
+          .withCounters(TOKEN_FAILURE_STAT)
+          .build();
+      registry = new MetricsRegistry("DelegationTokenSecretManagerMetrics");
+      LOG.debug("Initialized {}", registry);
+    }
+
+    public void trackStoreToken(InvocationRaisingIOE invocation) throws IOException {
+      trackInvocation(invocation, STORE_TOKEN_STAT, storeToken);
+    }
+
+    public void trackUpdateToken(InvocationRaisingIOE invocation) throws IOException {
+      trackInvocation(invocation, UPDATE_TOKEN_STAT, updateToken);
+    }
+
+    public void trackRemoveToken(InvocationRaisingIOE invocation) throws IOException {
+      trackInvocation(invocation, REMOVE_TOKEN_STAT, removeToken);
+    }
+
+    public void trackInvocation(InvocationRaisingIOE invocation, String statistic,
+        MutableRate metric) throws IOException {
+      try {
+        long start = Time.monotonicNow();
+        IOStatisticsBinding.trackDurationOfInvocation(this, statistic, invocation);
+        metric.add(Time.monotonicNow() - start);
+      } catch (Exception ex) {
+        tokenFailure.incr();
+        throw ex;
+      }
+    }
+
+    @Override
+    public DurationTracker trackDuration(String key, long count) {
+      return ioStatistics.trackDuration(key, count);
+    }
+
+    protected MutableRate getStoreToken() {
+      return storeToken;
+    }
+
+    protected MutableRate getUpdateToken() {
+      return updateToken;
+    }
+
+    protected MutableRate getRemoveToken() {
+      return removeToken;
+    }
+
+    protected MutableCounterLong getTokenFailure() {
+      return tokenFailure;
+    }
+
+    protected IOStatisticsStore getIoStatistics() {
+      return ioStatistics;
+    }
+  }
 }

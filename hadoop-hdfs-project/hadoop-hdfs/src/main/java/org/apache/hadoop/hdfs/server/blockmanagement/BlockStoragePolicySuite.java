@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.XAttr;
@@ -148,5 +148,10 @@ public class BlockStoragePolicySuite {
 
   public static String getStoragePolicyXAttrPrefixedName() {
     return XAttrHelper.getPrefixedName(XAttrNS, STORAGE_POLICY_XATTR_NAME);
+  }
+
+  public static boolean isStoragePolicyXAttr(XAttr xattr) {
+    return xattr != null && xattr.getNameSpace() == XAttrNS
+        && xattr.getName().equals(STORAGE_POLICY_XATTR_NAME);
   }
 }

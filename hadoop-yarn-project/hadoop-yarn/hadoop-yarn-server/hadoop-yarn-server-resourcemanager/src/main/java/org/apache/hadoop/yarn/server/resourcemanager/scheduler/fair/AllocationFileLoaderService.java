@@ -17,9 +17,9 @@
 */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
@@ -28,6 +28,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.util.XMLUtils;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.security.AccessType;
 import org.apache.hadoop.yarn.security.Permission;
@@ -59,7 +60,7 @@ import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.alloc
 @Unstable
 public class AllocationFileLoaderService extends AbstractService {
 
-  public static final Log LOG = LogFactory.getLog(
+  public static final Logger LOG = LoggerFactory.getLogger(
       AllocationFileLoaderService.class.getName());
 
   /** Time to wait between checks of the allocation file */
@@ -78,6 +79,7 @@ public class AllocationFileLoaderService extends AbstractService {
       "(?i)(hdfs)|(file)|(s3a)|(viewfs)";
 
   private final Clock clock;
+  private final FairScheduler scheduler;
 
   // Last time we successfully reloaded queues
   private volatile long lastSuccessfulReload;
@@ -95,25 +97,29 @@ public class AllocationFileLoaderService extends AbstractService {
   private Thread reloadThread;
   private volatile boolean running = true;
 
-  public AllocationFileLoaderService() {
-    this(SystemClock.getInstance());
+  public AllocationFileLoaderService(FairScheduler scheduler) {
+    this(SystemClock.getInstance(), scheduler);
   }
 
   private List<Permission> defaultPermissions;
 
-  public AllocationFileLoaderService(Clock clock) {
+  AllocationFileLoaderService(Clock clock, FairScheduler scheduler) {
     super(AllocationFileLoaderService.class.getName());
+    this.scheduler = scheduler;
     this.clock = clock;
   }
 
   @Override
   public void serviceInit(Configuration conf) throws Exception {
     this.allocFile = getAllocationFile(conf);
-    if(this.allocFile != null) {
+    if (this.allocFile != null) {
       this.fs = allocFile.getFileSystem(conf);
       reloadThread = new Thread(() -> {
         while (running) {
           try {
+            synchronized (this) {
+              reloadListener.onCheck();
+            }
             long time = clock.getTime();
             long lastModified =
                 fs.getFileStatus(allocFile).getModificationTime();
@@ -137,7 +143,7 @@ public class AllocationFileLoaderService extends AbstractService {
               lastReloadAttemptFailed = true;
             }
           } catch (IOException e) {
-            LOG.info("Exception while loading allocation file: " + e);
+            LOG.error("Exception while loading allocation file: " + e);
           }
           try {
             Thread.sleep(reloadIntervalMs);
@@ -179,7 +185,13 @@ public class AllocationFileLoaderService extends AbstractService {
    * Path to XML file containing allocations. If the
    * path is relative, it is searched for in the
    * classpath, but loaded like a regular File.
+   *
+   * @param conf configuration.
+   * @return Allocation File Path.
+   * @throws UnsupportedFileSystemException
+   *    File system for a given file system name/scheme is not supported.
    */
+  @VisibleForTesting
   public Path getAllocationFile(Configuration conf)
       throws UnsupportedFileSystemException {
     String allocFilePath = conf.get(FairSchedulerConfiguration.ALLOCATION_FILE,
@@ -230,8 +242,7 @@ public class AllocationFileLoaderService extends AbstractService {
     LOG.info("Loading allocation file " + allocFile);
 
     // Read and parse the allocations file.
-    DocumentBuilderFactory docBuilderFactory =
-        DocumentBuilderFactory.newInstance();
+    DocumentBuilderFactory docBuilderFactory = XMLUtils.newSecureDocumentBuilderFactory();
     docBuilderFactory.setIgnoringComments(true);
     DocumentBuilder builder = docBuilderFactory.newDocumentBuilder();
     Document doc = builder.parse(fs.open(allocFile));
@@ -250,17 +261,15 @@ public class AllocationFileLoaderService extends AbstractService {
         new AllocationFileQueueParser(allocationFileParser.getQueueElements());
     QueueProperties queueProperties = queueParser.parse();
 
-    // Load placement policy and pass it configured queues
-    Configuration conf = getConfig();
-    QueuePlacementPolicy newPlacementPolicy =
-        getQueuePlacementPolicy(allocationFileParser, queueProperties, conf);
+    // Load placement policy
+    getQueuePlacementPolicy(allocationFileParser);
     setupRootQueueProperties(allocationFileParser, queueProperties);
 
     ReservationQueueConfiguration globalReservationQueueConfig =
         createReservationQueueConfig(allocationFileParser);
 
     AllocationConfiguration info = new AllocationConfiguration(queueProperties,
-        allocationFileParser, newPlacementPolicy, globalReservationQueueConfig);
+        allocationFileParser, globalReservationQueueConfig);
 
     lastSuccessfulReload = clock.getTime();
     lastReloadAttemptFailed = false;
@@ -268,17 +277,15 @@ public class AllocationFileLoaderService extends AbstractService {
     reloadListener.onReload(info);
   }
 
-  private QueuePlacementPolicy getQueuePlacementPolicy(
-      AllocationFileParser allocationFileParser,
-      QueueProperties queueProperties, Configuration conf)
+  private void getQueuePlacementPolicy(
+      AllocationFileParser allocationFileParser)
       throws AllocationConfigurationException {
     if (allocationFileParser.getQueuePlacementPolicy().isPresent()) {
-      return QueuePlacementPolicy.fromXml(
+      QueuePlacementPolicy.fromXml(
           allocationFileParser.getQueuePlacementPolicy().get(),
-          queueProperties.getConfiguredQueues(), conf);
+          scheduler);
     } else {
-      return QueuePlacementPolicy.fromConfiguration(conf,
-          queueProperties.getConfiguredQueues());
+      QueuePlacementPolicy.fromConfiguration(scheduler);
     }
   }
 
@@ -351,5 +358,8 @@ public class AllocationFileLoaderService extends AbstractService {
 
   public interface Listener {
     void onReload(AllocationConfiguration info) throws IOException;
+
+    default void onCheck() {
+    }
   }
 }

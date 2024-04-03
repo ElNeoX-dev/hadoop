@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.resourceplugin.gpu;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Sets;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -196,7 +196,7 @@ public class TestNvidiaDockerV1CommandPlugin {
     // Volume driver should not be included by final commandline
     Assert.assertFalse(newCommandLine.containsKey("volume-driver"));
     Assert.assertTrue(newCommandLine.containsKey("devices"));
-    Assert.assertTrue(newCommandLine.containsKey("ro-mounts"));
+    Assert.assertTrue(newCommandLine.containsKey("mounts"));
 
     /* Test get docker volume command */
     commandPlugin = new MyNvidiaDockerV1CommandPlugin(conf);

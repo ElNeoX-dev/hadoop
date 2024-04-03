@@ -20,6 +20,7 @@ package org.apache.hadoop.mapreduce.v2.app.webapp;
 
 import static org.apache.hadoop.yarn.webapp.WebServicesTestUtils.assertResponseStatusCode;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -43,6 +44,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.Job;
 import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.mapreduce.v2.app.job.TaskAttempt;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
+import org.apache.hadoop.util.XMLUtils;
 import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
 import org.apache.hadoop.yarn.webapp.GuiceServletConfig;
 import org.apache.hadoop.yarn.webapp.JerseyTestBase;
@@ -191,7 +193,7 @@ public class TestAMWebServicesAttempts extends JerseyTestBase {
         assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
             response.getType().toString());
         String xml = response.getEntity(String.class);
-        DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+        DocumentBuilderFactory dbf = XMLUtils.newSecureDocumentBuilderFactory();
         DocumentBuilder db = dbf.newDocumentBuilder();
         InputSource is = new InputSource();
         is.setCharacterStream(new StringReader(xml));
@@ -315,7 +317,7 @@ public class TestAMWebServicesAttempts extends JerseyTestBase {
           assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
               response.getType().toString());
           String xml = response.getEntity(String.class);
-          DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+          DocumentBuilderFactory dbf = XMLUtils.newSecureDocumentBuilderFactory();
           DocumentBuilder db = dbf.newDocumentBuilder();
           InputSource is = new InputSource();
           is.setCharacterStream(new StringReader(xml));
@@ -483,6 +485,8 @@ public class TestAMWebServicesAttempts extends JerseyTestBase {
       Boolean found = false;
       for (int i = 0; i < nodes.getLength(); i++) {
         Element element = (Element) nodes.item(i);
+        assertFalse("task attempt should not contain any attributes, it can lead to incorrect JSON marshaling",
+            element.hasAttributes());
 
         if (attid.matches(WebServicesTestUtils.getXmlString(element, "id"))) {
           found = true;
@@ -597,7 +601,7 @@ public class TestAMWebServicesAttempts extends JerseyTestBase {
           assertEquals(MediaType.APPLICATION_XML_TYPE + "; " + JettyUtils.UTF_8,
               response.getType().toString());
           String xml = response.getEntity(String.class);
-          DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
+          DocumentBuilderFactory dbf = XMLUtils.newSecureDocumentBuilderFactory();
           DocumentBuilder db = dbf.newDocumentBuilder();
           InputSource is = new InputSource();
           is.setCharacterStream(new StringReader(xml));

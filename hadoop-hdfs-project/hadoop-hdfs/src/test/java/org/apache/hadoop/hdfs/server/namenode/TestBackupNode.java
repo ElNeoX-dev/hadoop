@@ -29,8 +29,8 @@ import java.net.InetSocketAddress;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FileSystem;
@@ -52,22 +52,23 @@ import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
+import org.slf4j.event.Level;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Lists;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 public class TestBackupNode {
-  public static final Log LOG = LogFactory.getLog(TestBackupNode.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestBackupNode.class);
 
   
   static {
-    GenericTestUtils.setLogLevel(Checkpointer.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(BackupImage.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(Checkpointer.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(BackupImage.LOG, Level.TRACE);
   }
   
   static final String BASE_DIR = MiniDFSCluster.getBaseDirectory();

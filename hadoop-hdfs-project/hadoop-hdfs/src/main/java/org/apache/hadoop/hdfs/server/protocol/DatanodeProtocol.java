@@ -79,6 +79,8 @@ public interface DatanodeProtocol {
   final static int DNA_CACHE = 9;      // cache blocks
   final static int DNA_UNCACHE = 10;   // uncache blocks
   final static int DNA_ERASURE_CODING_RECONSTRUCTION = 11; // erasure coding reconstruction command
+  int DNA_BLOCK_STORAGE_MOVEMENT = 12; // block storage movement command
+  int DNA_DROP_SPS_WORK_COMMAND = 13; // drop sps work command
 
   /** 
    * Register Datanode.
@@ -138,6 +140,7 @@ public interface DatanodeProtocol {
    *     Each finalized block is represented as 3 longs. Each under-
    *     construction replica is represented as 4 longs.
    *     This is done instead of Block[] to reduce memory used by block reports.
+   * @param reports report of blocks per storage
    * @param context Context information for this block report.
    *
    * @return - the next command for DN to process.
@@ -156,7 +159,7 @@ public interface DatanodeProtocol {
    * {@link #blockReport(DatanodeRegistration, String, StorageBlockReport[], BlockReportContext)},
    * which is used to communicated blocks stored on disk.
    *
-   * @param            The datanode registration.
+   * @param registration The datanode registration.
    * @param poolId     The block pool ID for the blocks.
    * @param blockIds   A list of block IDs.
    * @return           The DatanodeCommand.

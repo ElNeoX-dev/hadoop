@@ -22,12 +22,12 @@ import java.io.BufferedWriter;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStreamWriter;
-import java.io.PrintStream;
 import java.io.StringWriter;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -38,6 +38,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -45,6 +46,7 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import static java.util.concurrent.TimeUnit.*;
 
@@ -63,7 +65,7 @@ import static org.apache.hadoop.conf.StorageUnit.TB;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.*;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
@@ -485,6 +487,62 @@ public class TestConfiguration {
       System.out.println("p=" + p.name);
       String gotVal = mock.get(p.name);
       String gotRawVal = mock.getRaw(p.name);
+      assertEq(p.val, gotRawVal);
+      assertEq(p.expectEval, gotVal);
+    }
+  }
+
+  /**
+   * Verify that when a configuration is restricted, environment
+   * variables and system properties will be unresolved.
+   * The fallback patterns for the variables are still parsed.
+   */
+  @Test
+  public void testRestrictedEnv() throws IOException {
+    // this test relies on env.PATH being set on all platforms a
+    // test run will take place on, and the java.version sysprop
+    // set in all JVMs.
+    // Restricted configurations will not get access to these values, so
+    // will either be unresolved or, for env vars with fallbacks: the fallback
+    // values.
+
+    conf.setRestrictSystemProperties(true);
+
+    out = new BufferedWriter(new FileWriter(CONFIG));
+    startConfig();
+    // a simple property to reference
+    declareProperty("d", "D", "D");
+
+    // system property evaluation stops working completely
+    declareProperty("system1", "${java.version}", "${java.version}");
+
+    // the env variable does not resolve
+    declareProperty("secret1", "${env.PATH}", "${env.PATH}");
+
+    // but all the fallback options do work
+    declareProperty("secret2", "${env.PATH-a}", "a");
+    declareProperty("secret3", "${env.PATH:-b}", "b");
+    declareProperty("secret4", "${env.PATH:-}", "");
+    declareProperty("secret5", "${env.PATH-}", "");
+    // special case
+    declareProperty("secret6", "${env.PATH:}", "${env.PATH:}");
+    // safety check
+    declareProperty("secret7", "${env.PATH:--}", "-");
+
+    // recursive eval of the fallback
+    declareProperty("secret8", "${env.PATH:-${d}}", "D");
+
+    // if the fallback doesn't resolve, the result is the whole variable raw.
+    declareProperty("secret9", "${env.PATH:-$d}}", "${env.PATH:-$d}}");
+
+    endConfig();
+    Path fileResource = new Path(CONFIG);
+    conf.addResource(fileResource);
+
+    for (Prop p : props) {
+      System.out.println("p=" + p.name);
+      String gotVal = conf.get(p.name);
+      String gotRawVal = conf.getRaw(p.name);
       assertEq(p.val, gotRawVal);
       assertEq(p.expectEval, gotVal);
     }
@@ -931,6 +989,105 @@ public class TestConfiguration {
     tearDown();
   }
 
+  // When a resource is parsed as an input stream the first time, included
+  // properties are saved within the config. However, the included properties
+  // are not cached in the resource object. So, if an additional resource is
+  // added after the config is parsed the first time, the config loses the
+  // prperties that were included from the first resource.
+  @Test
+  public void testIncludesFromInputStreamWhenResourceAdded() throws Exception {
+    tearDown();
+
+    // CONFIG includes CONFIG2. CONFIG2 includes CONFIG_FOR_ENUM
+    out=new BufferedWriter(new FileWriter(CONFIG_FOR_ENUM));
+    startConfig();
+    appendProperty("e", "SecondLevelInclude");
+    appendProperty("f", "SecondLevelInclude");
+    endConfig();
+
+    out=new BufferedWriter(new FileWriter(CONFIG2));
+    startConfig();
+    startInclude(CONFIG_FOR_ENUM);
+    endInclude();
+    appendProperty("c","FirstLevelInclude");
+    appendProperty("d","FirstLevelInclude");
+    endConfig();
+
+    out=new BufferedWriter(new FileWriter(CONFIG));
+    startConfig();
+    startInclude(CONFIG2);
+    endInclude();
+    appendProperty("a", "1");
+    appendProperty("b", "2");
+    endConfig();
+
+    // Add CONFIG as an InputStream resource.
+    File file = new File(CONFIG);
+    BufferedInputStream bis =
+        new BufferedInputStream(new FileInputStream(file));
+    conf.addResource(bis);
+
+    // The first time the conf is parsed, verify that all properties were read
+    // from all levels of includes.
+    assertEquals("1", conf.get("a"));
+    assertEquals("2", conf.get("b"));
+    assertEquals("FirstLevelInclude", conf.get("c"));
+    assertEquals("FirstLevelInclude", conf.get("d"));
+    assertEquals("SecondLevelInclude", conf.get("e"));
+    assertEquals("SecondLevelInclude", conf.get("f"));
+
+    // Add another resource to the conf.
+    out=new BufferedWriter(new FileWriter(CONFIG_MULTI_BYTE));
+    startConfig();
+    appendProperty("g", "3");
+    appendProperty("h", "4");
+    endConfig();
+
+    Path fileResource = new Path(CONFIG_MULTI_BYTE);
+    conf.addResource(fileResource);
+
+    // Verify that all properties were read from all levels of includes the
+    // second time the conf is parsed.
+    assertEquals("1", conf.get("a"));
+    assertEquals("2", conf.get("b"));
+    assertEquals("FirstLevelInclude", conf.get("c"));
+    assertEquals("FirstLevelInclude", conf.get("d"));
+    assertEquals("SecondLevelInclude", conf.get("e"));
+    assertEquals("SecondLevelInclude", conf.get("f"));
+    assertEquals("3", conf.get("g"));
+    assertEquals("4", conf.get("h"));
+
+    tearDown();
+  }
+
+  @Test
+  public void testOrderOfDuplicatePropertiesWithInclude() throws Exception {
+    tearDown();
+
+    // Property "a" is set to different values inside and outside of includes.
+    out=new BufferedWriter(new FileWriter(CONFIG2));
+    startConfig();
+    appendProperty("a", "a-InsideInclude");
+    appendProperty("b", "b-InsideInclude");
+    endConfig();
+
+    out=new BufferedWriter(new FileWriter(CONFIG));
+    startConfig();
+    appendProperty("a","a-OutsideInclude");
+    startInclude(CONFIG2);
+    endInclude();
+    appendProperty("b","b-OutsideInclude");
+    endConfig();
+
+    Path fileResource = new Path(CONFIG);
+    conf.addResource(fileResource);
+
+    assertEquals("a-InsideInclude", conf.get("a"));
+    assertEquals("b-OutsideInclude", conf.get("b"));
+
+    tearDown();
+  }
+
   @Test
   public void testRelativeIncludes() throws Exception {
     tearDown();
@@ -961,6 +1118,38 @@ public class TestConfiguration {
     new File(relConfig).delete();
     new File(relConfig2).delete();
     new File(new File(relConfig).getParent()).delete();
+  }
+
+  @Test
+  public void testRelativeIncludesWithLoadingViaUri() throws Exception {
+    tearDown();
+    File configFile = new File("./tmp/test-config.xml");
+    File configFile2 = new File("./tmp/test-config2.xml");
+
+    new File(configFile.getParent()).mkdirs();
+    out = new BufferedWriter(new FileWriter(configFile2));
+    startConfig();
+    appendProperty("a", "b");
+    endConfig();
+
+    out = new BufferedWriter(new FileWriter(configFile));
+    startConfig();
+    // Add the relative path instead of the absolute one.
+    startInclude(configFile2.getName());
+    endInclude();
+    appendProperty("c", "d");
+    endConfig();
+
+    // verify that the includes file contains all properties
+    Path fileResource = new Path(configFile.toURI());
+    conf.addResource(fileResource);
+    assertEquals("b", conf.get("a"));
+    assertEquals("d", conf.get("c"));
+
+    // Cleanup
+    configFile.delete();
+    configFile2.delete();
+    new File(configFile.getParent()).delete();
   }
 
   @Test
@@ -1302,10 +1491,17 @@ public class TestConfiguration {
   @Test
   public void testTimeDuration() {
     Configuration conf = new Configuration(false);
+
+    assertEquals(7000L,
+        conf.getTimeDuration("test.time.a", 7L, SECONDS, MILLISECONDS));
+
     conf.setTimeDuration("test.time.a", 7L, SECONDS);
     assertEquals("7s", conf.get("test.time.a"));
     assertEquals(0L, conf.getTimeDuration("test.time.a", 30, MINUTES));
+    assertEquals(0L, conf.getTimeDuration("test.time.a", 30, SECONDS, MINUTES));
     assertEquals(7L, conf.getTimeDuration("test.time.a", 30, SECONDS));
+    assertEquals(7L,
+        conf.getTimeDuration("test.time.a", 30, MILLISECONDS, SECONDS));
     assertEquals(7000L, conf.getTimeDuration("test.time.a", 30, MILLISECONDS));
     assertEquals(7000000L,
         conf.getTimeDuration("test.time.a", 30, MICROSECONDS));
@@ -1322,6 +1518,8 @@ public class TestConfiguration {
     assertEquals(30L, conf.getTimeDuration("test.time.X", 30, SECONDS));
     conf.set("test.time.X", "30");
     assertEquals(30L, conf.getTimeDuration("test.time.X", 40, SECONDS));
+    assertEquals(30000L,
+        conf.getTimeDuration("test.time.X", 40, SECONDS, MILLISECONDS));
     assertEquals(10L, conf.getTimeDuration("test.time.c", "10", SECONDS));
     assertEquals(30L, conf.getTimeDuration("test.time.c", "30s", SECONDS));
     assertEquals(120L, conf.getTimeDuration("test.time.c", "2m", SECONDS));
@@ -2329,7 +2527,7 @@ public class TestConfiguration {
     }
     conf.set("different.prefix" + ".name", "value");
     Map<String, String> prefixedProps = conf.getPropsWithPrefix("prefix.");
-    assertEquals(prefixedProps.size(), 10);
+    assertThat(prefixedProps.size(), is(10));
     for (int i = 0; i < 10; i++) {
       assertEquals("value" + i, prefixedProps.get("name" + i));
     }
@@ -2340,7 +2538,7 @@ public class TestConfiguration {
       conf.set("subprefix." + "subname" + i, "value_${foo}" + i);
     }
     prefixedProps = conf.getPropsWithPrefix("subprefix.");
-    assertEquals(prefixedProps.size(), 10);
+    assertThat(prefixedProps.size(), is(10));
     for (int i = 0; i < 10; i++) {
       assertEquals("value_bar" + i, prefixedProps.get("subname" + i));
     }
@@ -2362,8 +2560,8 @@ public class TestConfiguration {
     try{
       out = new BufferedWriter(new FileWriter(CONFIG_CORE));
       startConfig();
-      appendProperty("hadoop.system.tags", "YARN,HDFS,NAMENODE");
-      appendProperty("hadoop.custom.tags", "MYCUSTOMTAG");
+      appendProperty("hadoop.tags.system", "YARN,HDFS,NAMENODE");
+      appendProperty("hadoop.tags.custom", "MYCUSTOMTAG");
       appendPropertyByTag("dfs.cblock.trace.io", "false", "YARN");
       appendPropertyByTag("dfs.replication", "1", "HDFS");
       appendPropertyByTag("dfs.namenode.logging.level", "INFO", "NAMENODE");
@@ -2406,33 +2604,14 @@ public class TestConfiguration {
 
   @Test
   public void testInvalidTags() throws Exception {
-    PrintStream output = System.out;
-    try {
-      ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-      System.setOut(new PrintStream(bytes));
+    Path fileResource = new Path(CONFIG);
+    conf.addResource(fileResource);
+    conf.getProps();
 
-      out = new BufferedWriter(new FileWriter(CONFIG));
-      startConfig();
-      appendPropertyByTag("dfs.cblock.trace.io", "false", "MYOWNTAG,TAG2");
-      endConfig();
-
-      Path fileResource = new Path(CONFIG);
-      conf.addResource(fileResource);
-      conf.getProps();
-
-      List<String> tagList = new ArrayList<>();
-      tagList.add("REQUIRED");
-      tagList.add("MYOWNTAG");
-      tagList.add("TAG2");
-
-      Properties properties = conf.getAllPropertiesByTags(tagList);
-      assertEq(0, properties.size());
-      assertFalse(properties.containsKey("dfs.cblock.trace.io"));
-      assertFalse(bytes.toString().contains("Invalid tag "));
-      assertFalse(bytes.toString().contains("Tag"));
-    } finally {
-      System.setOut(output);
-    }
+    assertFalse(conf.isPropertyTag("BADTAG"));
+    assertFalse(conf.isPropertyTag("CUSTOM_TAG"));
+    assertTrue(conf.isPropertyTag("DEBUG"));
+    assertTrue(conf.isPropertyTag("HDFS"));
   }
 
   /**
@@ -2463,5 +2642,69 @@ public class TestConfiguration {
     confClone.get("firstParse");
     // Thread 1
     config.get("secondParse");
+  }
+
+  @Test
+  public void testCDATA() throws IOException {
+    String xml = new String(
+        "<configuration>" +
+          "<property>" +
+            "<name>cdata</name>" +
+            "<value><![CDATA[>cdata]]></value>" +
+          "</property>\n" +
+          "<property>" +
+            "<name>cdata-multiple</name>" +
+            "<value><![CDATA[>cdata1]]> and <![CDATA[>cdata2]]></value>" +
+          "</property>\n" +
+          "<property>" +
+            "<name>cdata-multiline</name>" +
+            "<value><![CDATA[>cdata\nmultiline<>]]></value>" +
+          "</property>\n" +
+          "<property>" +
+            "<name>cdata-whitespace</name>" +
+            "<value>  prefix <![CDATA[>cdata]]>\nsuffix  </value>" +
+          "</property>\n" +
+        "</configuration>");
+    Configuration conf = checkCDATA(xml.getBytes());
+    ByteArrayOutputStream os = new ByteArrayOutputStream();
+    conf.writeXml(os);
+    checkCDATA(os.toByteArray());
+  }
+
+  private static Configuration checkCDATA(byte[] bytes) {
+    Configuration conf = new Configuration(false);
+    conf.addResource(new ByteArrayInputStream(bytes));
+    assertEquals(">cdata", conf.get("cdata"));
+    assertEquals(">cdata1 and >cdata2", conf.get("cdata-multiple"));
+    assertEquals(">cdata\nmultiline<>", conf.get("cdata-multiline"));
+    assertEquals("  prefix >cdata\nsuffix  ", conf.get("cdata-whitespace"));
+    return conf;
+  }
+
+  @Test
+  public void testConcurrentModificationDuringIteration() throws InterruptedException {
+    Configuration configuration = new Configuration();
+    new Thread(() -> {
+      while (true) {
+        configuration.set(String.valueOf(Math.random()), String.valueOf(Math.random()));
+      }
+    }).start();
+
+    AtomicBoolean exceptionOccurred = new AtomicBoolean(false);
+
+    new Thread(() -> {
+      while (true) {
+        try {
+          configuration.iterator();
+        } catch (final ConcurrentModificationException e) {
+          exceptionOccurred.set(true);
+          break;
+        }
+      }
+    }).start();
+
+    Thread.sleep(1000); //give enough time for threads to run
+
+    assertFalse("ConcurrentModificationException occurred", exceptionOccurred.get());
   }
 }

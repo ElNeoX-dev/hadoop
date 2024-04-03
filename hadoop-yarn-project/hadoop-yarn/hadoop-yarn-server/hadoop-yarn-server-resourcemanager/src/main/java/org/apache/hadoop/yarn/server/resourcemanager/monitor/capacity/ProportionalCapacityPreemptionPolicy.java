@@ -17,11 +17,11 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.monitor.capacity;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableSet;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
@@ -94,8 +94,8 @@ public class ProportionalCapacityPreemptionPolicy
     PRIORITY_FIRST, USERLIMIT_FIRST;
   }
 
-  private static final Log LOG =
-    LogFactory.getLog(ProportionalCapacityPreemptionPolicy.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ProportionalCapacityPreemptionPolicy.class);
 
   private final Clock clock;
 
@@ -111,6 +111,9 @@ public class ProportionalCapacityPreemptionPolicy
   private float maxAllowableLimitForIntraQueuePreemption;
   private float minimumThresholdForIntraQueuePreemption;
   private IntraQueuePreemptionOrderPolicy intraQueuePreemptionOrderPolicy;
+
+  private boolean crossQueuePreemptionConservativeDRF;
+  private boolean inQueuePreemptionConservativeDRF;
 
   // Current configuration
   private CapacitySchedulerConfiguration csConfig;
@@ -224,6 +227,18 @@ public class ProportionalCapacityPreemptionPolicy
                 CapacitySchedulerConfiguration.DEFAULT_INTRAQUEUE_PREEMPTION_ORDER_POLICY)
             .toUpperCase());
 
+    crossQueuePreemptionConservativeDRF =  config.getBoolean(
+        CapacitySchedulerConfiguration.
+        CROSS_QUEUE_PREEMPTION_CONSERVATIVE_DRF,
+        CapacitySchedulerConfiguration.
+        DEFAULT_CROSS_QUEUE_PREEMPTION_CONSERVATIVE_DRF);
+
+    inQueuePreemptionConservativeDRF =  config.getBoolean(
+        CapacitySchedulerConfiguration.
+        IN_QUEUE_PREEMPTION_CONSERVATIVE_DRF,
+        CapacitySchedulerConfiguration.
+        DEFAULT_IN_QUEUE_PREEMPTION_CONSERVATIVE_DRF);
+
     candidatesSelectionPolicies = new ArrayList<>();
 
     // Do we need white queue-priority preemption policy?
@@ -299,7 +314,12 @@ public class ProportionalCapacityPreemptionPolicy
           selectCandidatesForResevedContainers + "\n" +
         "additional_res_balance_based_on_reserved_containers = " +
           additionalPreemptionBasedOnReservedResource + "\n" +
-        "Preemption-to-balance-queue-enabled = " + isPreemptionToBalanceRequired);
+        "Preemption-to-balance-queue-enabled = " +
+          isPreemptionToBalanceRequired + "\n" +
+        "cross-queue-preemption.conservative-drf = " +
+          crossQueuePreemptionConservativeDRF + "\n" +
+        "in-queue-preemption.conservative-drf = " +
+          inQueuePreemptionConservativeDRF);
 
     csConfig = config;
   }
@@ -332,11 +352,9 @@ public class ProportionalCapacityPreemptionPolicy
         toPreemptPerSelector.values()) {
       toPreemptCount += containers.size();
     }
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(
-          "Starting to preempt containers for selectedCandidates and size:"
-              + toPreemptCount);
-    }
+    LOG.debug(
+        "Starting to preempt containers for selectedCandidates and size:{}",
+        toPreemptCount);
 
     // preempt (or kill) the selected containers
     // We need toPreemptPerSelector here to match list of containers to
@@ -424,7 +442,7 @@ public class ProportionalCapacityPreemptionPolicy
 
     return leafQueueNames;
   }
-  
+
   /**
    * This method selects and tracks containers to be preemptionCandidates. If a container
    * is in the target list for more than maxWaitTime it is killed.
@@ -466,6 +484,9 @@ public class ProportionalCapacityPreemptionPolicy
     // compute total preemption allowed
     Resource totalPreemptionAllowed = Resources.multiply(clusterResources,
         percentageClusterPreemptionAllowed);
+
+    //clear under served queues for every run
+    partitionToUnderServedQueues.clear();
 
     // based on ideal allocation select containers to be preemptionCandidates from each
     // queue and each application
@@ -563,11 +584,10 @@ public class ProportionalCapacityPreemptionPolicy
       Resource partitionResource, String partitionToLookAt) {
     TempQueuePerPartition ret;
     ReadLock readLock = curQueue.getReadLock();
+    // Acquire a read lock from Parent/LeafQueue.
+    readLock.lock();
     try {
-      // Acquire a read lock from Parent/LeafQueue.
-      readLock.lock();
-
-      String queueName = curQueue.getQueueName();
+      String queuePath = curQueue.getQueuePath();
       QueueCapacities qc = curQueue.getQueueCapacities();
       float absCap = qc.getAbsoluteCapacity(partitionToLookAt);
       float absMaxCap = qc.getAbsoluteMaximumCapacity(partitionToLookAt);
@@ -586,8 +606,8 @@ public class ProportionalCapacityPreemptionPolicy
 
       Resource reserved = Resources.clone(
           curQueue.getQueueResourceUsage().getReserved(partitionToLookAt));
-      if (null != preemptableQueues.get(queueName)) {
-        killable = Resources.clone(preemptableQueues.get(queueName)
+      if (null != preemptableQueues.get(queuePath)) {
+        killable = Resources.clone(preemptableQueues.get(queuePath)
             .getKillableResource(partitionToLookAt));
       }
 
@@ -603,7 +623,7 @@ public class ProportionalCapacityPreemptionPolicy
         // just ignore the error, this will be corrected when doing next check.
       }
 
-      ret = new TempQueuePerPartition(queueName, current, preemptionDisabled,
+      ret = new TempQueuePerPartition(queuePath, current, preemptionDisabled,
           partitionToLookAt, killable, absCap, absMaxCap, partitionResource,
           reserved, curQueue, effMinRes, effMaxRes);
 
@@ -779,6 +799,16 @@ public class ProportionalCapacityPreemptionPolicy
   @Override
   public IntraQueuePreemptionOrderPolicy getIntraQueuePreemptionOrderPolicy() {
     return intraQueuePreemptionOrderPolicy;
+  }
+
+  @Override
+  public boolean getCrossQueuePreemptionConservativeDRF() {
+    return crossQueuePreemptionConservativeDRF;
+  }
+
+  @Override
+  public boolean getInQueuePreemptionConservativeDRF() {
+    return inQueuePreemptionConservativeDRF;
   }
 
   @Override

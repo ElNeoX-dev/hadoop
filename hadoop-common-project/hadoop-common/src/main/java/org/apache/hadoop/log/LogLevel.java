@@ -32,8 +32,8 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Charsets;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.commons.logging.impl.Jdk14Logger;
@@ -66,6 +66,8 @@ public class LogLevel {
   public static final String PROTOCOL_HTTPS = "https";
   /**
    * A command line implementation
+   * @param args input args.
+   * @throws Exception exception.
    */
   public static void main(String[] args) throws Exception {
     CLI cli = new CLI(new Configuration());

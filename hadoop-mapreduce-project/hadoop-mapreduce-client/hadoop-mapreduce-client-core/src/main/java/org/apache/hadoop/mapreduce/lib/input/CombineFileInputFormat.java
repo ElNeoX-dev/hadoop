@@ -52,9 +52,9 @@ import org.apache.hadoop.net.NetworkTopology;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.HashMultiset;
-import com.google.common.collect.Multiset;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.collect.HashMultiset;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Multiset;
 
 /**
  * An abstract {@link InputFormat} that returns {@link CombineFileSplit}'s in 
@@ -425,8 +425,8 @@ public abstract class CombineFileInputFormat<K, V>
       if (completedNodes.size() == totalNodes || totalLength == 0) {
         // All nodes have been walked over and marked as completed or all blocks
         // have been assigned. The rest should be handled via rackLock assignment.
-        LOG.info("DEBUG: Terminated node allocation with : CompletedNodes: "
-            + completedNodes.size() + ", size left: " + totalLength);
+        LOG.debug("Terminated node allocation with : CompletedNodes: {}, size left: {}",
+            completedNodes.size(), totalLength);
         break;
       }
     }

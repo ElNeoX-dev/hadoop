@@ -31,6 +31,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.SecretKey;
 import javax.net.ssl.HttpsURLConnection;
@@ -42,6 +43,7 @@ import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.mapreduce.security.IntermediateEncryptedStream;
 import org.apache.hadoop.mapreduce.security.SecureShuffleUtils;
 import org.apache.hadoop.mapreduce.CryptoUtils;
 import org.apache.hadoop.security.ssl.SSLFactory;
@@ -50,7 +52,7 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.annotations.VisibleForTesting;
 
 class Fetcher<K,V> extends Thread {
   
@@ -87,7 +89,7 @@ class Fetcher<K,V> extends Thread {
   protected final ShuffleClientMetrics metrics;
   protected final ExceptionReporter exceptionReporter;
   protected final int id;
-  private static int nextId = 0;
+  private static final AtomicInteger NEXT_ID = new AtomicInteger(0);
   protected final int reduce;
   
   private final int connectionTimeout;
@@ -114,7 +116,7 @@ class Fetcher<K,V> extends Thread {
                  Reporter reporter, ShuffleClientMetrics metrics,
                  ExceptionReporter exceptionReporter, SecretKey shuffleKey) {
     this(job, reduceId, scheduler, merger, reporter, metrics,
-        exceptionReporter, shuffleKey, ++nextId);
+        exceptionReporter, shuffleKey, NEXT_ID.incrementAndGet());
   }
 
   @VisibleForTesting
@@ -512,7 +514,9 @@ class Fetcher<K,V> extends Thread {
       }
 
       InputStream is = input;
-      is = CryptoUtils.wrapIfNecessary(jobConf, is, compressedLength);
+      is =
+          IntermediateEncryptedStream.wrapIfNecessary(jobConf, is,
+              compressedLength, null);
       compressedLength -= CryptoUtils.cryptoPadding(jobConf);
       decompressedLength -= CryptoUtils.cryptoPadding(jobConf);
       

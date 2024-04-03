@@ -18,22 +18,22 @@
  */
 package org.apache.hadoop.hdfs.web.oauth2;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.ObjectReader;
-import com.squareup.okhttp.OkHttpClient;
-import com.squareup.okhttp.Request;
-import com.squareup.okhttp.RequestBody;
-import com.squareup.okhttp.Response;
+import java.io.IOException;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
+import org.apache.hadoop.util.JsonSerialization;
 import org.apache.hadoop.util.Timer;
 import org.apache.http.HttpStatus;
-
-import java.io.IOException;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
 
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.OAUTH_CLIENT_ID_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.OAUTH_REFRESH_URL_KEY;
@@ -55,8 +55,6 @@ import static org.apache.hadoop.hdfs.web.oauth2.Utils.notNull;
 @InterfaceStability.Evolving
 public abstract class CredentialBasedAccessTokenProvider
     extends AccessTokenProvider {
-  private static final ObjectReader READER =
-      new ObjectMapper().readerFor(Map.class);
 
   public static final String OAUTH_CREDENTIAL_KEY
       = "dfs.webhdfs.oauth2.credential";
@@ -99,37 +97,38 @@ public abstract class CredentialBasedAccessTokenProvider
   }
 
   void refresh() throws IOException {
-    try {
-      OkHttpClient client = new OkHttpClient();
-      client.setConnectTimeout(URLConnectionFactory.DEFAULT_SOCKET_TIMEOUT,
-          TimeUnit.MILLISECONDS);
-      client.setReadTimeout(URLConnectionFactory.DEFAULT_SOCKET_TIMEOUT,
-          TimeUnit.MILLISECONDS);
+    OkHttpClient client = new OkHttpClient.Builder()
+            .connectTimeout(URLConnectionFactory.DEFAULT_SOCKET_TIMEOUT, TimeUnit.MILLISECONDS)
+            .readTimeout(URLConnectionFactory.DEFAULT_SOCKET_TIMEOUT, TimeUnit.MILLISECONDS)
+            .build();
 
-      String bodyString = Utils.postBody(CLIENT_SECRET, getCredential(),
-          GRANT_TYPE, CLIENT_CREDENTIALS,
-          CLIENT_ID, clientId);
+    String bodyString = Utils.postBody(CLIENT_SECRET, getCredential(),
+        GRANT_TYPE, CLIENT_CREDENTIALS,
+        CLIENT_ID, clientId);
 
-      RequestBody body = RequestBody.create(URLENCODED, bodyString);
+    RequestBody body = RequestBody.create(bodyString, URLENCODED);
 
-      Request request = new Request.Builder()
-          .url(refreshURL)
-          .post(body)
-          .build();
-      Response responseBody = client.newCall(request).execute();
-
-      if (responseBody.code() != HttpStatus.SC_OK) {
-        throw new IllegalArgumentException("Received invalid http response: "
-            + responseBody.code() + ", text = " + responseBody.toString());
+    Request request = new Request.Builder()
+        .url(refreshURL)
+        .post(body)
+        .build();
+    try (Response response = client.newCall(request).execute()) {
+      if (!response.isSuccessful()) {
+        throw new IOException("Unexpected code " + response);
       }
 
-      Map<?, ?> response = READER.readValue(responseBody.body().string());
+      if (response.code() != HttpStatus.SC_OK) {
+        throw new IllegalArgumentException("Received invalid http response: "
+            + response.code() + ", text = " + response.toString());
+      }
 
-      String newExpiresIn = response.get(EXPIRES_IN).toString();
+      Map<?, ?> responseBody = JsonSerialization.mapReader().readValue(
+          response.body().string());
+
+      String newExpiresIn = responseBody.get(EXPIRES_IN).toString();
       timer.setExpiresIn(newExpiresIn);
 
-      accessToken = response.get(ACCESS_TOKEN).toString();
-
+      accessToken = responseBody.get(ACCESS_TOKEN).toString();
     } catch (Exception e) {
       throw new IOException("Unable to obtain access token from credential", e);
     }

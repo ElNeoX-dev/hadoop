@@ -30,8 +30,8 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.test.Whitebox;
 import org.junit.Test;
-import org.mockito.internal.util.reflection.Whitebox;
 
 import java.util.Iterator;
 
@@ -159,9 +159,9 @@ public class TestUnderReplicatedBlocks {
 
       BlockManagerTestUtil.updateState(bm);
       assertTrue("The number of blocks to be replicated should be less than "
-          + "or equal to " + bm.replicationStreamsHardLimit,
+          + "or equal to " + bm.getReplicationStreamsHardLimit(),
           secondDn.getNumberOfBlocksToBeReplicated()
-          <= bm.replicationStreamsHardLimit);
+          <= bm.getReplicationStreamsHardLimit());
       DFSTestUtil.verifyClientStats(conf, cluster);
     } finally {
       cluster.shutdown();

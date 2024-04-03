@@ -74,6 +74,7 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
     this(testName, 1);
   }
 
+  @SuppressWarnings("deprecation")
   public MiniMRYarnCluster(String testName, int noOfNMs) {
     this(testName, noOfNMs, false);
   }
@@ -82,6 +83,10 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
     super(testName, 1, noOfNMs, 4, 4, enableAHS);
     historyServerWrapper = new JobHistoryServerWrapper();
     addService(historyServerWrapper);
+  }
+
+  public static String copyAppJarIntoTestDir(String testSubdir) {
+    return JarFinder.getJar(LocalContainerLauncher.class, testSubdir);
   }
 
   public static String getResolvedMRHistoryWebAppURLWithoutScheme(
@@ -119,7 +124,9 @@ public class MiniMRYarnCluster extends MiniYARNCluster {
   @Override
   public void serviceInit(Configuration conf) throws Exception {
     conf.set(MRConfig.FRAMEWORK_NAME, MRConfig.YARN_FRAMEWORK_NAME);
-    if (conf.get(MRJobConfig.MR_AM_STAGING_DIR) == null) {
+    String stagingDir = conf.get(MRJobConfig.MR_AM_STAGING_DIR);
+    if (stagingDir == null ||
+        stagingDir.equals(MRJobConfig.DEFAULT_MR_AM_STAGING_DIR)) {
       conf.set(MRJobConfig.MR_AM_STAGING_DIR, new File(getTestWorkDir(),
           "apps_staging_dir/").getAbsolutePath());
     }

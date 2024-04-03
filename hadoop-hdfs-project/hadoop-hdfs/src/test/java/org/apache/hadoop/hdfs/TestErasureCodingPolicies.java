@@ -19,15 +19,16 @@ package org.apache.hadoop.hdfs;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.protocol.AddErasureCodingPolicyResponse;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.protocol.SystemErasureCodingPolicies;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.server.namenode.ErasureCodingPolicyManager;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -63,7 +64,7 @@ public class TestErasureCodingPolicies {
   private Configuration conf;
   private MiniDFSCluster cluster;
   private DistributedFileSystem fs;
-  private static final int BLOCK_SIZE = 16 * 1024;
+  private static final int BLOCK_SIZE = 1024 * 1024;
   private ErasureCodingPolicy ecPolicy;
   private FSNamesystem namesystem;
 
@@ -154,6 +155,19 @@ public class TestErasureCodingPolicies {
   }
 
   @Test
+  public void testContentSummaryOfECSubdir() throws IOException {
+    final Path testDir = new Path("/ec");
+    fs.mkdir(testDir, FsPermission.getDirDefault());
+    fs.setErasureCodingPolicy(testDir, ecPolicy.getName());
+    final Path fPath = new Path("ec/file");
+    fs.create(fPath).close();
+    final Path subdir = new Path("/ec/sub");
+    fs.mkdir(subdir, FsPermission.getDirDefault());
+    ContentSummary contentSummary = fs.getContentSummary(subdir);
+    assertEquals(ecPolicy.getName(),contentSummary.getErasureCodingPolicy());
+  }
+
+  @Test
   public void testBasicSetECPolicy()
       throws IOException, InterruptedException {
     final Path testDir = new Path("/ec");
@@ -222,9 +236,9 @@ public class TestErasureCodingPolicies {
         fs.getErasureCodingPolicy(disabledPolicy));
 
     // Also check loading disabled EC policies from fsimage
-    fs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     fs.saveNamespace();
-    fs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_LEAVE);
+    fs.setSafeMode(SafeModeAction.LEAVE);
     cluster.restartNameNodes();
 
     Assert.assertEquals("Dir does not have policy set",
@@ -730,6 +744,15 @@ public class TestErasureCodingPolicies {
     ErasureCodingPolicy[] policyArray = new ErasureCodingPolicy[]{newPolicy};
     AddErasureCodingPolicyResponse[] responses =
         fs.addErasureCodingPolicies(policyArray);
+    assertEquals(1, responses.length);
+    assertFalse(responses[0].isSucceed());
+
+    // Test numDataUnits + numParityUnits > 16
+    toAddSchema = new ECSchema("rs", 14, 4);
+    newPolicy =
+        new ErasureCodingPolicy(toAddSchema, 128 * 1024 * 1024);
+    policyArray = new ErasureCodingPolicy[]{newPolicy};
+    responses = fs.addErasureCodingPolicies(policyArray);
     assertEquals(1, responses.length);
     assertFalse(responses[0].isSucceed());
 

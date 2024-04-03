@@ -19,6 +19,7 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerDynamicEditException;
 
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common
@@ -54,9 +55,8 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
   @Override
   public void reinitialize(CSQueue newlyParsedQueue, Resource clusterResource)
       throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
-
       // Set new configs
       setupQueueConfigs(clusterResource);
 
@@ -68,12 +68,13 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
   /**
    * Add the specified child queue.
    * @param childQueue reference to the child queue to be added
-   * @throws SchedulerDynamicEditException
+   * @throws SchedulerDynamicEditException when addChildQueue fails.
+   * @throws IOException an I/O exception has occurred.
    */
   public void addChildQueue(CSQueue childQueue)
       throws SchedulerDynamicEditException, IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       if (childQueue.getCapacity() > 0) {
         throw new SchedulerDynamicEditException(
             "Queue " + childQueue + " being added has non zero capacity.");
@@ -91,12 +92,12 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
   /**
    * Remove the specified child queue.
    * @param childQueue reference to the child queue to be removed
-   * @throws SchedulerDynamicEditException
+   * @throws SchedulerDynamicEditException when removeChildQueue fails.
    */
   public void removeChildQueue(CSQueue childQueue)
       throws SchedulerDynamicEditException {
+    writeLock.lock();
     try {
-      writeLock.lock();
       if (childQueue.getCapacity() > 0) {
         throw new SchedulerDynamicEditException(
             "Queue " + childQueue + " being removed has non zero capacity.");
@@ -106,9 +107,7 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
         CSQueue cs = qiter.next();
         if (cs.equals(childQueue)) {
           qiter.remove();
-          if (LOG.isDebugEnabled()) {
-            LOG.debug("Removed child queue: {}" + cs.getQueueName());
-          }
+          LOG.debug("Removed child queue: {}", cs.getQueuePath());
         }
       }
     } finally {
@@ -119,13 +118,14 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
   /**
    * Remove the specified child queue.
    * @param childQueueName name of the child queue to be removed
-   * @throws SchedulerDynamicEditException
+   * @return child queue.
+   * @throws SchedulerDynamicEditException when removeChildQueue fails.
    */
   public CSQueue removeChildQueue(String childQueueName)
       throws SchedulerDynamicEditException {
     CSQueue childQueue;
+    writeLock.lock();
     try {
-      writeLock.lock();
       childQueue = this.csContext.getCapacitySchedulerQueueManager().getQueue(
           childQueueName);
       if (childQueue != null) {
@@ -141,8 +141,8 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
   }
 
   protected float sumOfChildCapacities() {
+    writeLock.lock();
     try {
-      writeLock.lock();
       float ret = 0;
       for (CSQueue l : childQueues) {
         ret += l.getCapacity();
@@ -154,8 +154,8 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
   }
 
   protected float sumOfChildAbsCapacities() {
+    writeLock.lock();
     try {
-      writeLock.lock();
       float ret = 0;
       for (CSQueue l : childQueues) {
         ret += l.getAbsoluteCapacity();
@@ -202,6 +202,13 @@ public abstract class AbstractManagedParentQueue extends ParentQueue {
 
     CapacitySchedulerConfiguration leafQueueConfigs = new
         CapacitySchedulerConfiguration(new Configuration(false), false);
+
+    String prefix = YarnConfiguration.RESOURCE_TYPES + ".";
+    Map<String, String> rtProps = csContext
+        .getConfiguration().getPropsWithPrefix(prefix);
+    for (Map.Entry<String, String> entry : rtProps.entrySet()) {
+      leafQueueConfigs.set(prefix + entry.getKey(), entry.getValue());
+    }
 
     SortedMap<String, String> sortedConfigs = sortCSConfigurations();
     SortedMap<String, String> templateConfigs = getConfigurationsWithPrefix

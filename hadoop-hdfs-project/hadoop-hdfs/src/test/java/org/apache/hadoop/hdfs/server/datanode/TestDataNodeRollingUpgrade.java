@@ -27,10 +27,11 @@ import java.util.Random;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.hdfs.DFSOutputStream;
 import org.apache.hadoop.hdfs.DFSTestUtil;
@@ -44,7 +45,6 @@ import org.apache.hadoop.hdfs.TestRollingUpgrade;
 import org.apache.hadoop.hdfs.protocol.BlockLocalPathInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.tools.DFSAdmin;
 import org.apache.hadoop.test.GenericTestUtils;
@@ -56,7 +56,8 @@ import org.mockito.Mockito;
  * finalize and rollback.
  */
 public class TestDataNodeRollingUpgrade {
-  private static final Log LOG = LogFactory.getLog(TestDataNodeRollingUpgrade.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDataNodeRollingUpgrade.class);
 
   private static final short REPL_FACTOR = 1;
   private static final int BLOCK_SIZE = 1024 * 1024;
@@ -168,7 +169,7 @@ public class TestDataNodeRollingUpgrade {
 
   private void startRollingUpgrade() throws Exception {
     LOG.info("Starting rolling upgrade");
-    fs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    fs.setSafeMode(SafeModeAction.ENTER);
     final DFSAdmin dfsadmin = new DFSAdmin(conf);
     TestRollingUpgrade.runCmd(dfsadmin, true, "-rollingUpgrade", "prepare");
     triggerHeartBeats();

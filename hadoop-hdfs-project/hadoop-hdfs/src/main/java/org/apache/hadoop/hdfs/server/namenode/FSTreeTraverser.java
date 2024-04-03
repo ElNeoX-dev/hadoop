@@ -34,7 +34,7 @@ import org.apache.hadoop.util.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Preconditions;
 
 /**
  * FSTreeTraverser traverse directory recursively and process files
@@ -289,7 +289,7 @@ public abstract class FSTreeTraverser {
   /**
    * Check whether current batch can be submitted for the processing.
    *
-   * @return true if batch size meets meet the condition, otherwise false.
+   * @return true if batch size meets the condition, otherwise false.
    */
   protected abstract boolean shouldSubmitCurrentBatch();
 
@@ -310,7 +310,7 @@ public abstract class FSTreeTraverser {
    * @throws IOException
    * @throws InterruptedException
    */
-  protected abstract void submitCurrentBatch(long startId)
+  protected abstract void submitCurrentBatch(Long startId)
       throws IOException, InterruptedException;
 
   /**

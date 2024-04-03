@@ -22,6 +22,7 @@ import java.nio.channels.ClosedChannelException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.Iterator;
 import java.util.List;
@@ -31,6 +32,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
@@ -40,6 +42,7 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.VolumeChoosingPolicy;
 import org.apache.hadoop.hdfs.server.datanode.BlockScanner;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
+import org.apache.hadoop.hdfs.server.datanode.metrics.DataNodeDiskMetrics;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.AutoCloseableLock;
@@ -61,13 +64,16 @@ class FsVolumeList {
   private final VolumeChoosingPolicy<FsVolumeImpl> blockChooser;
   private final BlockScanner blockScanner;
 
+  private final DataNodeDiskMetrics diskMetrics;
+
   FsVolumeList(List<VolumeFailureInfo> initialVolumeFailureInfos,
       BlockScanner blockScanner,
-      VolumeChoosingPolicy<FsVolumeImpl> blockChooser) {
+      VolumeChoosingPolicy<FsVolumeImpl> blockChooser, DataNodeDiskMetrics dataNodeDiskMetrics) {
     this.blockChooser = blockChooser;
     this.blockScanner = blockScanner;
     this.checkDirsLock = new AutoCloseableLock();
     this.checkDirsLockCondition = checkDirsLock.newCondition();
+    this.diskMetrics = dataNodeDiskMetrics;
     for (VolumeFailureInfo volumeFailureInfo: initialVolumeFailureInfos) {
       volumeFailureInfos.put(volumeFailureInfo.getFailedStorageLocation(),
           volumeFailureInfo);
@@ -83,6 +89,15 @@ class FsVolumeList {
 
   private FsVolumeReference chooseVolume(List<FsVolumeImpl> list,
       long blockSize, String storageId) throws IOException {
+
+    // Exclude slow disks when choosing volume.
+    if (diskMetrics != null) {
+      List<String> slowDisksToExclude = diskMetrics.getSlowDisksToExclude();
+      list = list.stream()
+          .filter(volume -> !slowDisksToExclude.contains(volume.getBaseURI().getPath()))
+          .collect(Collectors.toList());
+    }
+
     while (true) {
       FsVolumeImpl volume = blockChooser.chooseVolume(list, blockSize,
           storageId);
@@ -188,8 +203,8 @@ class FsVolumeList {
                         final RamDiskReplicaTracker ramDiskReplicaMap)
       throws IOException {
     long totalStartTime = Time.monotonicNow();
-    final List<IOException> exceptions = Collections.synchronizedList(
-        new ArrayList<IOException>());
+    final Map<FsVolumeSpi, IOException> unhealthyDataDirs =
+        new ConcurrentHashMap<FsVolumeSpi, IOException>();
     List<Thread> replicaAddingThreads = new ArrayList<Thread>();
     for (final FsVolumeImpl v : volumes) {
       Thread t = new Thread() {
@@ -202,13 +217,10 @@ class FsVolumeList {
             long timeTaken = Time.monotonicNow() - startTime;
             FsDatasetImpl.LOG.info("Time to add replicas to map for block pool"
                 + " " + bpid + " on volume " + v + ": " + timeTaken + "ms");
-          } catch (ClosedChannelException e) {
-            FsDatasetImpl.LOG.info("The volume " + v + " is closed while " +
-                "adding replicas, ignored.");
           } catch (IOException ioe) {
             FsDatasetImpl.LOG.info("Caught exception while adding replicas " +
                 "from " + v + ". Will throw later.", ioe);
-            exceptions.add(ioe);
+            unhealthyDataDirs.put(v, ioe);
           }
         }
       };
@@ -222,12 +234,13 @@ class FsVolumeList {
         throw new IOException(ie);
       }
     }
-    if (!exceptions.isEmpty()) {
-      throw exceptions.get(0);
-    }
     long totalTimeTaken = Time.monotonicNow() - totalStartTime;
-    FsDatasetImpl.LOG.info("Total time to add all replicas to map: "
-        + totalTimeTaken + "ms");
+    FsDatasetImpl.LOG
+        .info("Total time to add all replicas to map for block pool " + bpid
+            + ": " + totalTimeTaken + "ms");
+    if (!unhealthyDataDirs.isEmpty()) {
+      throw new AddBlockPoolException(unhealthyDataDirs);
+    }
   }
 
   /**
@@ -297,7 +310,7 @@ class FsVolumeList {
     } else {
       // If the volume is not put into a volume scanner, it does not need to
       // hold the reference.
-      IOUtils.cleanup(null, ref);
+      IOUtils.cleanupWithLogger(null, ref);
     }
     // If the volume is used to replace a failed volume, it needs to reset the
     // volume failure info for this volume.
@@ -397,9 +410,8 @@ class FsVolumeList {
 
   void addBlockPool(final String bpid, final Configuration conf) throws IOException {
     long totalStartTime = Time.monotonicNow();
-    
-    final List<IOException> exceptions = Collections.synchronizedList(
-        new ArrayList<IOException>());
+    final Map<FsVolumeSpi, IOException> unhealthyDataDirs =
+        new ConcurrentHashMap<FsVolumeSpi, IOException>();
     List<Thread> blockPoolAddingThreads = new ArrayList<Thread>();
     for (final FsVolumeImpl v : volumes) {
       Thread t = new Thread() {
@@ -412,12 +424,10 @@ class FsVolumeList {
             long timeTaken = Time.monotonicNow() - startTime;
             FsDatasetImpl.LOG.info("Time taken to scan block pool " + bpid +
                 " on " + v + ": " + timeTaken + "ms");
-          } catch (ClosedChannelException e) {
-            // ignore.
           } catch (IOException ioe) {
             FsDatasetImpl.LOG.info("Caught exception while scanning " + v +
                 ". Will throw later.", ioe);
-            exceptions.add(ioe);
+            unhealthyDataDirs.put(v, ioe);
           }
         }
       };
@@ -431,15 +441,14 @@ class FsVolumeList {
         throw new IOException(ie);
       }
     }
-    if (!exceptions.isEmpty()) {
-      throw exceptions.get(0);
-    }
-    
     long totalTimeTaken = Time.monotonicNow() - totalStartTime;
     FsDatasetImpl.LOG.info("Total time to scan all replicas for block pool " +
         bpid + ": " + totalTimeTaken + "ms");
+    if (!unhealthyDataDirs.isEmpty()) {
+      throw new AddBlockPoolException(unhealthyDataDirs);
+    }
   }
-  
+
   void removeBlockPool(String bpid, Map<DatanodeStorage, BlockListAsLongs>
       blocksPerVolume) {
     for (FsVolumeImpl v : volumes) {

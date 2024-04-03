@@ -58,7 +58,7 @@ import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-import com.google.common.base.Supplier;
+import java.util.function.Supplier;
 import org.slf4j.LoggerFactory;
 import org.slf4j.Logger;
 
@@ -363,8 +363,8 @@ public class TestPread {
       assertTrue(false);
     } finally {
       Mockito.reset(injector);
-      IOUtils.cleanup(null, input);
-      IOUtils.cleanup(null, output);
+      IOUtils.cleanupWithLogger(null, input);
+      IOUtils.cleanupWithLogger(null, output);
       fileSys.close();
       cluster.shutdown();
     }
@@ -401,9 +401,9 @@ public class TestPread {
     DFSClient dfsClient = fileSys.getClient();
     DFSHedgedReadMetrics metrics = dfsClient.getHedgedReadMetrics();
     // Metrics instance is static, so we need to reset counts from prior tests.
-    metrics.hedgedReadOps.set(0);
-    metrics.hedgedReadOpsWin.set(0);
-    metrics.hedgedReadOpsInCurThread.set(0);
+    metrics.hedgedReadOps.reset();
+    metrics.hedgedReadOpsWin.reset();
+    metrics.hedgedReadOpsInCurThread.reset();
 
     try {
       Path file1 = new Path("hedgedReadMaxOut.dat");
@@ -590,7 +590,7 @@ public class TestPread {
     String filename = "/hedgedReadMaxOut.dat";
     DFSHedgedReadMetrics metrics = dfsClient.getHedgedReadMetrics();
     // Metrics instance is static, so we need to reset counts from prior tests.
-    metrics.hedgedReadOps.set(0);
+    metrics.hedgedReadOps.reset();
     try {
       Path file = new Path(filename);
       output = fileSys.create(file, (short) 2);
@@ -603,7 +603,9 @@ public class TestPread {
       input.read(0, buffer, 0, 1024);
       Assert.fail("Reading the block should have thrown BlockMissingException");
     } catch (BlockMissingException e) {
-      assertEquals(3, input.getHedgedReadOpsLoopNumForTesting());
+      // The result of 9 is due to 2 blocks by 4 iterations plus one because
+      // hedgedReadOpsLoopNumForTesting is incremented at start of the loop.
+      assertEquals(9, input.getHedgedReadOpsLoopNumForTesting());
       assertTrue(metrics.getHedgedReadOps() == 0);
     } finally {
       Mockito.reset(injector);
@@ -676,11 +678,10 @@ public class TestPread {
       Path p = new Path("/test");
       String data = "testingmissingblock";
       DFSTestUtil.writeFile(dfs, p, data);
-
+      DFSTestUtil.waitForReplication(dfs, p, (short) 2, 10000);
       FSDataInputStream in = dfs.open(p);
       List<LocatedBlock> blocks = DFSTestUtil.getAllBlocks(in);
       LocatedBlock lb = blocks.get(0);
-      DFSTestUtil.waitForReplication(cluster, lb.getBlock(), 1, 2, 0);
       blocks = DFSTestUtil.getAllBlocks(in);
       DatanodeInfo[] locations = null;
       for (LocatedBlock locatedBlock : blocks) {

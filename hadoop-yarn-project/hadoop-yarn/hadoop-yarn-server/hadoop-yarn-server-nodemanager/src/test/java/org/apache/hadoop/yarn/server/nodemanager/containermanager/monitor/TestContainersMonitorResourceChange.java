@@ -25,6 +25,7 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
@@ -41,6 +42,8 @@ import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Cont
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerEventType;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerImpl;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor.ContainersMonitorImpl.ProcessTreeInfo;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.runtime.ContainerExecutionException;
+import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerExecContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerLivenessContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerReapContext;
 import org.apache.hadoop.yarn.server.nodemanager.executor.ContainerSignalContext;
@@ -100,6 +103,13 @@ public class TestContainersMonitorResourceChange {
         throws IOException {
       return true;
     }
+
+    @Override
+    public IOStreamPair execContainer(ContainerExecContext ctx)
+        throws ContainerExecutionException {
+      return new IOStreamPair(null, null);
+    }
+
     @Override
     public void deleteAsUser(DeletionAsUserContext ctx)
         throws IOException, InterruptedException {
@@ -119,6 +129,10 @@ public class TestContainersMonitorResourceChange {
     public boolean isContainerAlive(ContainerLivenessContext ctx)
         throws IOException {
       return true;
+    }
+    @Override
+    public void updateYarnSysFS(Context ctx, String user, String appId,
+        String spec) throws IOException {
     }
   }
 
@@ -174,9 +188,10 @@ public class TestContainersMonitorResourceChange {
   }
 
   @Test
-  public void testContainersResourceChange() throws Exception {
+  public void testContainersResourceChangePolling() throws Exception {
     // set container monitor interval to be 20ms
     conf.setLong(YarnConfiguration.NM_CONTAINER_MON_INTERVAL_MS, 20L);
+    conf.setBoolean(YarnConfiguration.NM_MEMORY_RESOURCE_ENFORCED, false);
     containersMonitor = createContainersMonitor(executor, dispatcher, context);
     containersMonitor.init(conf);
     containersMonitor.start();
@@ -267,13 +282,24 @@ public class TestContainersMonitorResourceChange {
 
   @Test
   public void testContainersCPUResourceForDefaultValue() throws Exception {
+    testContainerMonitoringInvalidResources(
+        MockCPUResourceCalculatorProcessTree.class.getCanonicalName());
+  }
+
+  @Test
+  public void testContainersMemoryResourceUnavailable() throws Exception {
+    testContainerMonitoringInvalidResources(
+        MockMemoryResourceCalculatorProcessTree.class.getCanonicalName());
+  }
+
+  private void testContainerMonitoringInvalidResources(
+      String processTreeClassName) throws Exception {
     Configuration newConf = new Configuration(conf);
-    // set container monitor interval to be 20s
+    // set container monitor interval to be 20ms
     newConf.setLong(YarnConfiguration.NM_CONTAINER_MON_INTERVAL_MS, 20L);
     containersMonitor = createContainersMonitor(executor, dispatcher, context);
     newConf.set(YarnConfiguration.NM_CONTAINER_MON_PROCESS_TREE,
-        MockCPUResourceCalculatorProcessTree.class.getCanonicalName());
-    // set container monitor interval to be 20ms
+        processTreeClassName);
     containersMonitor.init(newConf);
     containersMonitor.start();
 
@@ -290,7 +316,7 @@ public class TestContainersMonitorResourceChange {
         0, containersMonitor.getContainersUtilization()
             .compareTo(ResourceUtilization.newInstance(0, 0, 0.0f)));
 
-    // Verify the container utilization value. Since atleast one round is done,
+    // Verify the container utilization value. Since at least one round is done,
     // we can expect a non-zero value for container utilization as
     // MockCPUResourceCalculatorProcessTree#getCpuUsagePercent will return 50.
     waitForContainerResourceUtilizationChange(containersMonitor, 100);
@@ -309,12 +335,13 @@ public class TestContainersMonitorResourceChange {
       }
 
       LOG.info(
-          "Monitor thread is waiting for resource utlization change.");
+          "Monitor thread is waiting for resource utilization change.");
       Thread.sleep(WAIT_MS_PER_LOOP);
       timeWaiting += WAIT_MS_PER_LOOP;
     }
 
-    assertTrue("Resource utilization is not changed from second run onwards",
+    assertTrue("Resource utilization is not changed after " +
+            timeoutMsecs / WAIT_MS_PER_LOOP + " updates",
         0 != containersMonitor.getContainersUtilization()
             .compareTo(ResourceUtilization.newInstance(0, 0, 0.0f)));
   }

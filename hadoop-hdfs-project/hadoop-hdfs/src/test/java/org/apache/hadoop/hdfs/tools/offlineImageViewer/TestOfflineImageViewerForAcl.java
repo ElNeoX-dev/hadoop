@@ -21,7 +21,6 @@ import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
@@ -29,33 +28,32 @@ import java.io.RandomAccessFile;
 import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.HashMap;
 
-import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.SAXParser;
 import javax.xml.parsers.SAXParserFactory;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
 import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.util.XMLUtils;
+
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import static org.apache.hadoop.fs.permission.AclEntryScope.ACCESS;
@@ -71,16 +69,16 @@ import static org.apache.hadoop.fs.permission.FsAction.NONE;
 import static org.apache.hadoop.hdfs.server.namenode.AclTestHelpers.aclEntry;
 import static org.junit.Assert.assertEquals;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 /**
  * Tests OfflineImageViewer if the input fsimage has HDFS ACLs
  */
 public class TestOfflineImageViewerForAcl {
 
-  private static final Log LOG =
-      LogFactory.getLog(TestOfflineImageViewerForAcl.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestOfflineImageViewerForAcl.class);
 
   private static File originalFsimage = null;
 
@@ -148,7 +146,7 @@ public class TestOfflineImageViewerForAcl {
       writtenAcls.put(file.toString(), hdfs.getAclStatus(file));
 
       // Write results to the fsimage file
-      hdfs.setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_ENTER, false);
+      hdfs.setSafeMode(SafeModeAction.ENTER, false);
       hdfs.saveNamespace();
 
       // Determine the location of the fsimage file
@@ -224,7 +222,7 @@ public class TestOfflineImageViewerForAcl {
     PrintStream o = new PrintStream(output);
     PBImageXmlWriter v = new PBImageXmlWriter(new Configuration(), o);
     v.visit(new RandomAccessFile(originalFsimage, "r"));
-    SAXParserFactory spf = SAXParserFactory.newInstance();
+    SAXParserFactory spf = XMLUtils.newSecureSAXParserFactory();
     SAXParser parser = spf.newSAXParser();
     final String xml = output.toString();
     parser.parse(new InputSource(new StringReader(xml)), new DefaultHandler());

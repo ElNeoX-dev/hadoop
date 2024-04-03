@@ -29,19 +29,19 @@ import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.MiniDFSCluster.DataNodeProperties;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
@@ -59,14 +59,14 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
+import java.util.function.Supplier;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Lists;
 
 /**
  * Tests to verify safe mode correctness.
  */
 public class TestSafeMode {
-  public static final Log LOG = LogFactory.getLog(TestSafeMode.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestSafeMode.class);
   private static final Path TEST_PATH = new Path("/test");
   private static final int BLOCK_SIZE = 1024;
   private static final String NEWLINE = System.getProperty("line.separator");
@@ -134,10 +134,10 @@ public class TestSafeMode {
     dfs = cluster.getFileSystem();
     
     assertTrue("No datanode is started. Should be in SafeMode", 
-               dfs.setSafeMode(SafeModeAction.SAFEMODE_GET));
+               dfs.setSafeMode(SafeModeAction.GET));
     
     // manually set safemode.
-    dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    dfs.setSafeMode(SafeModeAction.ENTER);
     
     // now bring up the datanode and wait for it to be active.
     cluster.startDataNodes(conf, 1, true, null, null);
@@ -149,9 +149,9 @@ public class TestSafeMode {
     } catch (InterruptedException ignored) {}
 
     assertTrue("should still be in SafeMode",
-        dfs.setSafeMode(SafeModeAction.SAFEMODE_GET));
+        dfs.setSafeMode(SafeModeAction.GET));
     assertFalse("should not be in SafeMode", 
-        dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE));
+        dfs.setSafeMode(SafeModeAction.LEAVE));
   }
 
   /**
@@ -201,11 +201,11 @@ public class TestSafeMode {
     final NameNode nn = cluster.getNameNode();
     
     String status = nn.getNamesystem().getSafemode();
-    assertEquals("Safe mode is ON. The reported blocks 0 needs additional " +
-        "14 blocks to reach the threshold 0.9990 of total blocks 15." + NEWLINE +
-        "The number of live datanodes 0 has reached the minimum number 0. " +
-        "Safe mode will be turned off automatically once the thresholds " +
-        "have been reached.", status);
+    assertEquals("Safe mode is ON. The reported blocks 0 needs additional "
+        + "14 blocks to reach the threshold 0.9990 of total blocks 15."
+        + NEWLINE + "The minimum number of live datanodes is not required. "
+        + "Safe mode will be turned off automatically once the thresholds have "
+        + "been reached.", status);
     assertFalse("Mis-replicated block queues should not be initialized " +
         "until threshold is crossed",
         NameNodeAdapter.safeModeInitializedReplQueues(nn));
@@ -311,7 +311,7 @@ public class TestSafeMode {
     final Path file1 = new Path("/file1");
     DFSTestUtil.createFile(fs, file1, 1024, (short)1, 0);
     assertTrue("Could not enter SM",
-        dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER));
+        dfs.setSafeMode(SafeModeAction.ENTER));
     try {
       FSRun fsRun = new FSRun() {
         @Override
@@ -339,10 +339,10 @@ public class TestSafeMode {
       InterruptedException {
     final Path file1 = new Path("/file1");
 
-    assertFalse(dfs.setSafeMode(SafeModeAction.SAFEMODE_GET));
+    assertFalse(dfs.setSafeMode(SafeModeAction.GET));
     DFSTestUtil.createFile(fs, file1, 1024, (short)1, 0);
     assertTrue("Could not enter SM", 
-        dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER));
+        dfs.setSafeMode(SafeModeAction.ENTER));
 
     runFsFun("Set quota while in SM", new FSRun() { 
       @Override
@@ -492,7 +492,7 @@ public class TestSafeMode {
     }
 
     assertFalse("Could not leave SM",
-        dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE));
+        dfs.setSafeMode(SafeModeAction.LEAVE));
   }
 
   /**
@@ -536,11 +536,11 @@ public class TestSafeMode {
     dfs = cluster.getFileSystem();
 
     // Enter safemode.
-    dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+    dfs.setSafeMode(SafeModeAction.ENTER);
     assertTrue("State was expected to be in safemode.", dfs.isInSafeMode());
 
     // Exit safemode.
-    dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+    dfs.setSafeMode(SafeModeAction.LEAVE);
     assertFalse("State was expected to be out of safemode.", dfs.isInSafeMode());
   }
   
@@ -561,11 +561,11 @@ public class TestSafeMode {
       NameNode namenode = cluster.getNameNode();
 
       // manually set safemode.
-      dfs.setSafeMode(SafeModeAction.SAFEMODE_ENTER);
+      dfs.setSafeMode(SafeModeAction.ENTER);
       assertTrue("should still be in SafeMode", namenode.isInSafeMode());
       // getBlock locations should still work since block locations exists
       checkGetBlockLocationsWorks(fs, file1);
-      dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);
+      dfs.setSafeMode(SafeModeAction.LEAVE);
       assertFalse("should not be in SafeMode", namenode.isInSafeMode());
       
       
@@ -595,7 +595,7 @@ public class TestSafeMode {
       }
 
 
-      dfs.setSafeMode(SafeModeAction.SAFEMODE_LEAVE);      
+      dfs.setSafeMode(SafeModeAction.LEAVE);
       assertFalse("Should not be in safemode", namenode.isInSafeMode());
       checkGetBlockLocationsWorks(fs, file1);
 
